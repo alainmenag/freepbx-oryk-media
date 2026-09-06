@@ -175,7 +175,20 @@
 	 * on some versions after this script has already run -- so the click is
 	 * caught on the document rather than bound to the node.
 	 */
+	var actions = {};
+
 	function onAction(name, handler) {
+		var first = !actions[name];
+
+		// Registering the same button twice replaces its handler rather than
+		// adding a second one. This file can be run again without a document
+		// load, and a stacked listener means one click doing the thing twice.
+		actions[name] = handler;
+
+		if (!first) {
+			return;
+		}
+
 		document.addEventListener('click', function (event) {
 			var target = event.target;
 
@@ -190,7 +203,7 @@
 			}
 
 			event.preventDefault();
-			handler(event);
+			actions[name](event);
 		});
 	}
 

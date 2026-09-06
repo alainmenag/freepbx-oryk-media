@@ -6,13 +6,14 @@
  * on a recording that is already on disk; making one is views/edit.php, which
  * the Add button in the action bar goes to.
  *
- * The rows are drawn by list.js from the JSON below rather than by PHP: a
- * delete answers with the new list, so one renderer paints both the first load
- * and every change after it.
+ * The table is bootstrap-table against ajax.php, the same as the devices table
+ * in oryk_connect: search, sort and paging are the server's answers rather
+ * than this page's, so a delete only has to say "refresh". No rows are
+ * rendered here, and the toolbar and pagination chrome are the plugin's own --
+ * the markup below is only the parts it does not generate.
  *
  * @var string   $customDir
  * @var bool     $writable
- * @var array    $recordings
  * @var string   $saved       Name just written by the editor, highlighted here
  * @var callable $assetUrl
  */
@@ -34,32 +35,37 @@ $h = function ($v) {
 			</div>
 		<?php endif; ?>
 
-		<div class="bootstrap-table bootstrap4">
-
-			<div class="fixed-table-toolbar">
-				<h2><span class="title">Media</span></h2>
-			</div>
-
-			<div class="fixed-table-container">
-				<div class="fixed-table-body">
-					<table class="table table-striped table-bordered table-hover">
-						<thead>
-							<tr>
-								<th><div class="th-inner">Name</div></th>
-								<th><div class="th-inner">Formats</div></th>
-								<th><div class="th-inner">Size</div></th>
-								<th><div class="th-inner">Modified</div></th>
-								<th><div class="th-inner">&nbsp;</div></th>
-							</tr>
-						</thead>
-						<tbody id="orykMediaList">
-							<tr><td colspan="5" class="text-muted">Loading…</td></tr>
-						</tbody>
-					</table>
-				</div>
-			</div>
-
+		<!-- Handed to the table as data-toolbar, so the plugin lifts it into
+		     its own toolbar row and the title sits level with the search box
+		     instead of above a second, empty one. -->
+		<div id="orykMediaToolbar" class="oryk-toolbar">
+			<h2><span class="title">Media</span></h2>
 		</div>
+
+		<table
+			id="oryk_recording_table"
+			data-toggle="table"
+			data-url="ajax.php?module=oryk_media&amp;command=list"
+			class="table table-striped table-bordered table-hover oryk-list"
+			data-toolbar="#orykMediaToolbar"
+			data-side-pagination="server"
+			data-pagination="true"
+			data-search="true"
+			data-unique-id="name"
+			data-row-style="orykRowStyle"
+			data-sort-name="modified"
+			data-sort-order="desc">
+			<thead>
+				<tr>
+					<th data-field="name" data-formatter="orykFmtName" data-sortable="true">Name</th>
+					<th data-field="formats" data-formatter="orykFmtFormats" data-sortable="true">Formats</th>
+					<th data-field="bytes" data-formatter="orykFmtSize" data-sortable="true">Size</th>
+					<th data-field="modified" data-formatter="orykFmtModified" data-sortable="true">Modified</th>
+					<th data-field="actions" data-formatter="orykFmtActions">Actions</th>
+				</tr>
+			</thead>
+		</table>
+
 	</div>
 </div>
 
@@ -68,7 +74,6 @@ $h = function ($v) {
 	window.OrykMedia.config = {
 		customDir: <?php echo json_encode($customDir); ?>,
 		writable: <?php echo $writable ? 'true' : 'false'; ?>,
-		recordings: <?php echo json_encode($recordings); ?>,
 		saved: <?php echo json_encode($saved); ?>
 	};
 </script>

@@ -114,10 +114,22 @@
 	color: #c9302c;
 }
 
+/* The actions cell is a flex row so the player, Edit and Delete stay on one
+   line and the player is the thing that gives way when the column narrows. */
+.oryk-media .oryk-row-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+	white-space: nowrap;
+}
+
 .oryk-media .oryk-row-actions audio {
 	height: 32px;
 	vertical-align: middle;
 	max-width: 260px;
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 .oryk-media .oryk-row-note:empty {
@@ -163,6 +175,13 @@
 .oryk-media .oryk-inline-help {
 	display: inline;
 	margin: 0;
+}
+
+/* Lifted into bootstrap-table's toolbar row by data-toolbar, so the heading
+   has to stop behaving like a block heading and sit next to the search box. */
+.oryk-media .oryk-toolbar h2 {
+	margin: 0;
+	line-height: 34px;
 }
 
 /* The row the editor just wrote, so a save that navigated away still lands

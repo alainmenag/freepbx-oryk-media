@@ -5,61 +5,70 @@
  * sending it to the editor, deleting it. Making one is the other page's job,
  * and nothing here knows how.
  *
- * The table is drawn from JSON rather than by PHP because a delete answers
- * with the new list, so the same renderer paints the page and every change to
- * it. Two renderers would be two chances to disagree.
+ * The table is bootstrap-table with server-side pagination, the same as the
+ * devices table in oryk_connect. Search, sort and paging are questions the
+ * table asks the server, so a delete only has to say "refresh" -- it never
+ * has to know what page or search was in force, and neither does this file.
+ *
+ * The cell formatters are globals because that is how bootstrap-table resolves
+ * data-formatter, and they are prefixed rather than named for their column so
+ * two modules on one page cannot collide.
  */
-(function (window, document) {
+(function (window, document, $) {
 	'use strict';
 
 	var CFG = (window.OrykMedia && window.OrykMedia.config) || {};
 	var S = window.OrykMedia && window.OrykMedia.shared;
 
-	var el = {};
+	var TABLE = '#oryk_recording_table';
 
-	function $(id) {
-		return document.getElementById(id);
-	}
+	// One namespace for everything this file binds on the document, so a
+	// second run can take its own handlers off before putting them back.
+	var NS = '.orykMediaList';
 
 	/* ------------------------------------------------------------------ */
-	/* Rendering                                                           */
+	/* Cell formatters                                                     */
 	/* ------------------------------------------------------------------ */
 
-	function row(r) {
-		var name = S.escapeHtml(r.name);
+	/**
+	 * The name doubles as the link into the editor -- it is the recording's
+	 * identity, so it is also its address. The empty note div underneath is
+	 * where a refused delete explains itself.
+	 */
+	window.orykFmtName = function (value, row) {
+		return '<a href="' + S.escapeHtml(S.editUrl(row.name)) + '">' +
+			'<code>custom/' + S.escapeHtml(row.name) + '</code></a>' +
+			'<div class="oryk-row-note"></div>';
+	};
 
-		return '<tr data-oryk-row="' + name + '"' +
-			(r.name === CFG.saved ? ' class="oryk-row-new"' : '') + '>' +
-			'<td><a href="' + S.escapeHtml(S.editUrl(r.name)) + '"><code>custom/' + name + '</code></a>' +
-			'<div class="oryk-row-note"></div></td>' +
-			'<td>' + S.escapeHtml(r.formats.join(', ')) + '</td>' +
-			'<td>' + S.bytes(r.bytes) + '</td>' +
-			'<td>' + S.escapeHtml(S.when(r.modified)) + '</td>' +
-			'<td class="text-right oryk-row-actions">' +
-			(r.playable
-				? '<audio controls preload="none" src="' + S.escapeHtml(S.playUrl(r.name)) + '"></audio>'
+	window.orykFmtFormats = function (value) {
+		return S.escapeHtml((value || []).join(', '));
+	};
+
+	window.orykFmtSize = function (value) {
+		return S.bytes(value);
+	};
+
+	window.orykFmtModified = function (value) {
+		return S.escapeHtml(S.when(value));
+	};
+
+	window.orykFmtActions = function (value, row) {
+		return '<div class="oryk-row-actions">' +
+			(row.playable
+				? '<audio controls preload="none" src="' + S.escapeHtml(S.playUrl(row.name)) + '"></audio>'
 				: '<span class="text-muted">not previewable</span>') +
-			' <a class="btn btn-xs btn-default" href="' + S.escapeHtml(S.editUrl(r.name)) + '">' +
+			' <a class="btn btn-default btn-sm" href="' + S.escapeHtml(S.editUrl(row.name)) + '" role="button">' +
 			'<i class="fa fa-pencil"></i> Edit</a>' +
-			' <button type="button" class="btn btn-xs btn-default" data-oryk-delete="' + name + '"' +
-			' title="Delete"><i class="fa fa-trash"></i></button>' +
-			'</td></tr>';
-	}
+			' <button type="button" class="btn btn-default btn-sm" data-oryk-delete="' +
+			S.escapeHtml(row.name) + '" title="Delete"><i class="fa fa-trash"></i></button>' +
+			'</div>';
+	};
 
-	function render(recordings) {
-		if (!el.list) {
-			return;
-		}
-
-		if (!recordings.length) {
-			el.list.innerHTML = '<tr><td colspan="5" class="text-muted">' +
-				'No recordings yet. <a href="' + S.escapeHtml(S.editUrl('')) + '">Add one</a>.' +
-				'</td></tr>';
-			return;
-		}
-
-		el.list.innerHTML = recordings.map(row).join('');
-	}
+	/** Marks the row the editor just wrote, so a save that navigated away lands somewhere visible. */
+	window.orykRowStyle = function (row) {
+		return row.name === CFG.saved ? { classes: 'oryk-row-new' } : {};
+	};
 
 	/* ------------------------------------------------------------------ */
 	/* Deleting                                                            */
@@ -69,25 +78,27 @@
 	 * A recording an IVR points at is refused the first time and only removed
 	 * on an explicit "Delete anyway" -- the module knows the file is in use,
 	 * and the person clicking is the one who knows whether that matters.
+	 *
+	 * $row is the <tr> the click came from; the refusal is written into that
+	 * row rather than looked up by name, so nothing here depends on which page
+	 * of which search the row is currently sitting on.
 	 */
-	function remove(name, force) {
+	function remove(name, force, $row) {
 		S.post(S.command('delete', { name: name, force: force ? 'true' : 'false' }))
 			.then(function (res) {
 				if (res.status) {
-					render(res.recordings || []);
+					$(TABLE).bootstrapTable('refresh', { silent: true });
 					S.toast(res.message || 'Deleted', 'success');
 					return;
 				}
 
-				var note = el.list.querySelector('[data-oryk-row="' + name + '"] .oryk-row-note');
-
-				if (note) {
-					note.innerHTML = S.escapeHtml(res.message || 'Could not delete.') +
-						(res.inUse
-							? ' <button type="button" class="btn btn-xs btn-danger" data-oryk-force="' +
-								S.escapeHtml(name) + '">Delete anyway</button>'
-							: '');
-				}
+				$row.find('.oryk-row-note').html(
+					S.escapeHtml(res.message || 'Could not delete.') +
+					(res.inUse
+						? ' <button type="button" class="btn btn-danger btn-xs" data-oryk-force="' +
+							S.escapeHtml(name) + '">Delete anyway</button>'
+						: '')
+				);
 
 				S.toast(res.message || 'Could not delete', 'error');
 			})
@@ -101,20 +112,12 @@
 	/* ------------------------------------------------------------------ */
 
 	function init() {
-		el.list = $('orykMediaList');
-
-		// FreePBX can swap a module page in without a document load, which runs
-		// this file again against the same table. The claim is staked on the
-		// node, where both copies can see it.
-		if (!S || !el.list || el.list.getAttribute('data-oryk-bound') === '1') {
+		if (!S || !$(TABLE).length) {
 			return;
 		}
 
-		el.list.setAttribute('data-oryk-bound', '1');
-
-		render(CFG.recordings || []);
-
-		if (CFG.saved) {
+		if (CFG.saved && !$(TABLE).attr('data-oryk-greeted')) {
+			$(TABLE).attr('data-oryk-greeted', '1');
 			S.toast('Saved custom/' + CFG.saved, 'success');
 		}
 
@@ -122,46 +125,48 @@
 			S.go(S.editUrl(''));
 		});
 
-		el.list.addEventListener('click', function (event) {
-			var button = event.target.closest('[data-oryk-delete], [data-oryk-force]');
+		// Delegated on the document: bootstrap-table replaces the whole tbody
+		// on every search, sort and page, so anything bound to a row would be
+		// gone by the second interaction.
+		//
+		// Unbound first, because FreePBX can swap a module page in without a
+		// document load and run this file a second time. Two handlers on one
+		// click is not a doubled action here, it is a *different* one: the
+		// first arms the delete button, and the second reads it as armed and
+		// deletes on the spot -- the confirm step vanishes rather than
+		// misfiring, which is the worst way for it to break.
+		$(document).off('click' + NS);
 
-			if (!button) {
-				return;
-			}
+		$(document).on('click' + NS, '[data-oryk-force]', function () {
+			remove($(this).attr('data-oryk-force'), true, $(this).closest('tr'));
+		});
 
-			var force = button.getAttribute('data-oryk-force');
-
-			if (force) {
-				remove(force, true);
-				return;
-			}
-
-			var name = button.getAttribute('data-oryk-delete');
+		$(document).on('click' + NS, '[data-oryk-delete]', function () {
+			var button = $(this);
+			var name = button.attr('data-oryk-delete');
 
 			// Two-step confirm in place of a modal: the second click commits,
 			// and the button disarms itself if it does not come.
-			if (button.getAttribute('data-oryk-armed')) {
-				remove(name, false);
+			if (button.attr('data-oryk-armed')) {
+				remove(name, false, button.closest('tr'));
 				return;
 			}
 
-			button.setAttribute('data-oryk-armed', '1');
-			button.className = 'btn btn-xs btn-danger';
-			button.innerHTML = 'Really delete?';
+			button
+				.attr('data-oryk-armed', '1')
+				.attr('class', 'btn btn-danger btn-sm')
+				.html('Really delete?');
 
 			window.setTimeout(function () {
-				if (button.parentNode) {
-					button.removeAttribute('data-oryk-armed');
-					button.className = 'btn btn-xs btn-default';
-					button.innerHTML = '<i class="fa fa-trash"></i>';
+				if (button.closest('body').length) {
+					button
+						.removeAttr('data-oryk-armed')
+						.attr('class', 'btn btn-default btn-sm')
+						.html('<i class="fa fa-trash"></i>');
 				}
 			}, 4000);
 		});
 	}
 
-	if (document.readyState === 'loading') {
-		document.addEventListener('DOMContentLoaded', init);
-	} else {
-		init();
-	}
-})(window, document);
+	$(init);
+})(window, document, jQuery);
