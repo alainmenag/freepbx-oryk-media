@@ -33,9 +33,16 @@
 	var paused = false;
 	var startedAt = 0;
 	var elapsedBefore = 0;
+	var timerId = null;
+	var timerGen = 0;
+	var lastClock = '';
+	var drawGen = 0;
+	var opening = false;
 
 	var takeBlob = null;     // encoded WAV of the current take
 	var takeUrl = null;
+	var monitorUrl = null;   // scratch WAV of the paused-so-far audio
+	var monitoring = false;
 
 	/* ------------------------------------------------------------------ */
 	/* Small helpers                                                       */
@@ -67,10 +74,16 @@
 	}
 
 	function clock(seconds) {
-		var m = Math.floor(seconds / 60);
-		var s = Math.floor(seconds % 60);
+		var cs = Math.floor((seconds || 0) * 100);
+		var h = Math.floor(cs / 360000);
+		var m = Math.floor((cs % 360000) / 6000);
+		var s = Math.floor((cs % 6000) / 100);
 
-		return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+		return pad2(h) + ':' + pad2(m) + ':' + pad2(s) + ':' + pad2(cs % 100);
+	}
+
+	function pad2(n) {
+		return (n < 10 ? '0' : '') + n;
 	}
 
 	function bytes(n) {
@@ -364,8 +377,14 @@
 	/* Meter and scope                                                     */
 	/* ------------------------------------------------------------------ */
 
-	function draw() {
-		rafId = window.requestAnimationFrame(draw);
+	function draw(gen) {
+		if (gen !== drawGen) {
+			return;
+		}
+
+		rafId = window.requestAnimationFrame(function () {
+			draw(gen);
+		});
 
 		if (!analyser || !el.scope) {
 			return;
@@ -422,12 +441,13 @@
 	}
 
 	function startDrawing() {
-		if (rafId === null) {
-			draw();
-		}
+		stopDrawing();
+		draw(drawGen);
 	}
 
 	function stopDrawing() {
+		drawGen++;
+
 		if (rafId !== null) {
 			window.cancelAnimationFrame(rafId);
 			rafId = null;
@@ -438,15 +458,61 @@
 		}
 	}
 
-	function tick() {
-		if (!recording) {
+	function elapsed() {
+		return elapsedBefore + (recording && !paused ? (Date.now() - startedAt) / 1000 : 0);
+	}
+
+	function paintTimer() {
+		var value = clock(elapsed());
+
+		if (value !== lastClock) {
+			lastClock = value;
+			text(el.timer, value);
+		}
+	}
+
+	/**
+	 * Each loop carries the generation it was born in. stopTimer() bumps the
+	 * generation, so any chain still in flight — including one the shared
+	 * timerId has lost track of — retires itself on its next wake instead of
+	 * rescheduling forever.
+	 */
+	function tick(gen) {
+		if (gen !== timerGen) {
 			return;
 		}
 
-		var seconds = elapsedBefore + (paused ? 0 : (Date.now() - startedAt) / 1000);
+		timerId = null;
 
-		text(el.timer, clock(seconds));
-		window.setTimeout(tick, 200);
+		if (!recording || paused) {
+			return;
+		}
+
+		paintTimer();
+		timerId = window.setTimeout(function () {
+			tick(gen);
+		}, 50);
+	}
+
+	function startTimer() {
+		stopTimer();
+		tick(timerGen);
+	}
+
+	function stopTimer() {
+		timerGen++;
+
+		if (timerId !== null) {
+			window.clearTimeout(timerId);
+			timerId = null;
+		}
+	}
+
+	function resetTimer() {
+		stopTimer();
+		elapsedBefore = 0;
+		lastClock = '00:00:00:00';
+		text(el.timer, '00:00:00:00');
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -454,10 +520,16 @@
 	/* ------------------------------------------------------------------ */
 
 	function start() {
+		if (recording || opening) {
+			return;
+		}
+
+		opening = true;
 		clearError();
 		discardTake();
 
 		openMic().then(function () {
+			opening = false;
 			chunks = [];
 			frames = 0;
 			paused = false;
@@ -470,13 +542,16 @@
 			el.record.querySelector('span').textContent = 'Stop';
 			el.record.querySelector('i').className = 'fa fa-stop';
 			show(el.pause, true);
-			text(el.state, 'Recording');
-			el.state.className = 'oryk-state is-live';
 
 			startDrawing();
-			tick();
+			lastClock = '';
+			startTimer();
 		}).catch(function (error) {
+			opening = false;
 			recording = false;
+			paused = false;
+			stopTimer();
+			stopDrawing();
 			fail(micMessage(error));
 		});
 	}
@@ -519,12 +594,16 @@
 
 		stopDrawing();
 		closeMic();
+		clearMonitor();
+
+		resetTimer();
 
 		text(el.state, 'Encoding');
 		el.state.className = 'oryk-state';
 
 		if (!frames) {
-			text(el.state, 'Nothing was captured');
+			fail('Nothing was captured.');
+			text(el.state, 'Ready');
 			return;
 		}
 
@@ -539,6 +618,7 @@
 			takeUrl = URL.createObjectURL(takeBlob);
 
 			el.preview.src = takeUrl;
+			show(el.saveForm, true);
 			show(el.review, true);
 			text(el.state, clock(samples.length / rate) + ' · ' + bytes(takeBlob.size) + ' · ' + (rate / 1000) + ' kHz');
 			el.name.focus();
@@ -546,6 +626,66 @@
 			fail(error.message || 'Could not encode the recording.');
 			text(el.state, 'Ready');
 		});
+	}
+
+	/**
+	 * Paused playback. Encodes the audio captured so far into a scratch WAV so
+	 * it can be auditioned mid-take. `chunks` is left untouched — flatten()
+	 * copies — so resuming appends to the same recording.
+	 */
+	function monitor() {
+		if (monitoring || !frames) {
+			return;
+		}
+
+		monitoring = true;
+
+		var rate = parseInt(el.rate.value, 10) || 8000;
+		var captured = flatten(chunks, frames);
+		var sourceRate = ctx.sampleRate;
+
+		text(el.state, 'Encoding');
+
+		resample(captured, sourceRate, rate).then(function (samples) {
+			monitoring = false;
+
+			if (!recording || !paused) {
+				return;
+			}
+
+			var blob = encodeWav(samples, rate);
+
+			releaseMonitor();
+			monitorUrl = URL.createObjectURL(blob);
+
+			el.preview.src = monitorUrl;
+			show(el.saveForm, false);
+			show(el.review, true);
+			text(el.state, clock(samples.length / rate) + ' so far · paused');
+		}).catch(function (error) {
+			monitoring = false;
+
+			if (recording && paused) {
+				fail(error.message || 'Could not build the preview.');
+			}
+		});
+	}
+
+	function releaseMonitor() {
+		if (monitorUrl) {
+			URL.revokeObjectURL(monitorUrl);
+			monitorUrl = null;
+		}
+	}
+
+	function clearMonitor() {
+		if (!el.preview.paused) {
+			el.preview.pause();
+		}
+
+		el.preview.removeAttribute('src');
+		releaseMonitor();
+		show(el.review, false);
 	}
 
 	function togglePause() {
@@ -558,16 +698,16 @@
 			startedAt = Date.now();
 			el.pause.querySelector('span').textContent = 'Pause';
 			el.pause.querySelector('i').className = 'fa fa-pause';
-			text(el.state, 'Recording');
-			el.state.className = 'oryk-state is-live';
-			tick();
+			clearMonitor();
+			startTimer();
 		} else {
 			paused = true;
 			elapsedBefore += (Date.now() - startedAt) / 1000;
 			el.pause.querySelector('span').textContent = 'Resume';
 			el.pause.querySelector('i').className = 'fa fa-play';
-			text(el.state, 'Paused');
-			el.state.className = 'oryk-state';
+			stopTimer();
+			paintTimer();
+			monitor();
 		}
 	}
 
@@ -578,10 +718,10 @@
 
 		takeBlob = null;
 		takeUrl = null;
-		el.preview.removeAttribute('src');
-		show(el.review, false);
+		clearMonitor();
+		show(el.saveForm, true);
 		text(el.saveState, '');
-		text(el.timer, '00:00');
+		resetTimer();
 		text(el.state, 'Ready');
 	}
 
@@ -776,7 +916,28 @@
 	/* Wiring                                                              */
 	/* ------------------------------------------------------------------ */
 
+	var booted = false;
+
 	function init() {
+		if (booted) {
+			return;
+		}
+
+		// FreePBX can swap a module page in without a full document load, which
+		// re-executes this file. That gives a second copy of the script its own
+		// closure — its own `recording`, `startedAt`, `timerId` — bound to the
+		// same buttons, so one click drives two recorders writing different
+		// times into the same element. A closure-local flag cannot see the
+		// other copy, so the claim is staked on the node itself.
+		var anchor = $('orykMediaRecord');
+
+		if (!anchor || anchor.getAttribute('data-oryk-bound') === '1') {
+			return;
+		}
+
+		anchor.setAttribute('data-oryk-bound', '1');
+		booted = true;
+
 		el = {
 			insecure: $('orykMediaInsecure'),
 			error: $('orykMediaError'),
@@ -789,6 +950,7 @@
 			meter: $('orykMediaMeterFill'),
 			scope: $('orykMediaScope'),
 			review: $('orykMediaReview'),
+			saveForm: $('orykMediaSaveForm'),
 			preview: $('orykMediaPreview'),
 			name: $('orykMediaName'),
 			save: $('orykMediaSave'),

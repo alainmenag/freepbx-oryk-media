@@ -90,8 +90,7 @@ $h = function ($v) {
 						<button type="button" id="orykMediaPause" class="btn btn-default btn-lg hidden">
 							<i class="fa fa-pause"></i> <span>Pause</span>
 						</button>
-						<span id="orykMediaTimer" class="oryk-timer">00:00</span>
-						<span id="orykMediaState" class="oryk-state">Ready</span>
+						<span id="orykMediaTimer" class="oryk-timer">00:00:00:00</span>
 					</div>
 
 					<div class="oryk-meter" aria-hidden="true">
@@ -104,6 +103,9 @@ $h = function ($v) {
 				<div id="orykMediaReview" class="oryk-review hidden">
 					<audio id="orykMediaPreview" controls class="oryk-preview"></audio>
 
+					<div id="orykMediaState" class="oryk-state">Ready</div>
+
+					<div id="orykMediaSaveForm">
 					<div class="element-container">
 						<div class="row">
 							<div class="form-group">
@@ -141,6 +143,7 @@ $h = function ($v) {
 							Discard
 						</button>
 						<span id="orykMediaSaveState" class="oryk-save-state"></span>
+					</div>
 					</div>
 				</div>
 

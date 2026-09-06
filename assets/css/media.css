@@ -28,6 +28,8 @@
 .oryk-media .oryk-state {
 	color: #777;
 	font-size: 13px;
+	margin-top: 6px;
+	min-height: 18px;
 }
 
 .oryk-media .oryk-state.is-live {
@@ -88,7 +90,7 @@
 .oryk-media .oryk-preview {
 	width: 100%;
 	max-width: 520px;
-	margin-bottom: 16px;
+	margin-bottom: 0;
 }
 
 .oryk-media .oryk-review-actions {
