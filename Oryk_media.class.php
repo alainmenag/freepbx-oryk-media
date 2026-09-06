@@ -628,10 +628,102 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	/* BMO                                                                 */
 	/* ------------------------------------------------------------------ */
 
+	/**
+	 * fwconsole ma install / upgrade.
+	 *
+	 * The only thing this does is fetch the Piper runtime and the default
+	 * voice, and it is best effort throughout: Text to Speech is the optional
+	 * half of this module, so a box with no outbound network, a firewall in
+	 * the way, or simply no interest in TTS still gets a working microphone
+	 * recorder. Nothing here is allowed to fail the install.
+	 *
+	 * It is also a no-op on every install after the first: the script is run
+	 * with --if-missing, so an upgrade or a reinstall does not re-download
+	 * 115 MB that has not changed since 2023.
+	 *
+	 * Set ORYK_MEDIA_SKIP_TTS_FETCH=1 to skip it entirely -- for an air-gapped
+	 * box, or one where the runtime is delivered by configuration management.
+	 */
 	public function install()
 	{
+		$this->installTtsRuntime();
 	}
 
+	private function installTtsRuntime()
+	{
+		$tts = $this->tts();
+
+		if (getenv('ORYK_MEDIA_SKIP_TTS_FETCH')) {
+			$this->say('Media: skipping the Piper download (ORYK_MEDIA_SKIP_TTS_FETCH is set).');
+			$this->say('Media: run install/fetch-piper.sh later to enable Text to Speech.');
+
+			return;
+		}
+
+		if ($tts->runtimeInstalled()) {
+			$this->say('Media: the Piper runtime and voice are already installed.');
+
+			return;
+		}
+
+		if (!is_file($tts->fetchScript())) {
+			$this->say('Media: install/fetch-piper.sh is missing; Text to Speech will stay unavailable.');
+
+			return;
+		}
+
+		$this->say('Media: installing the Piper text-to-speech runtime and the default voice (~115 MB).');
+		$this->say('Media: this happens once, and can take a few minutes on a slow link.');
+
+		$module = $this;
+
+		$result = $tts->installRuntime(function ($line) use ($module) {
+			$module->say('  ' . $line);
+		});
+
+		if (empty($result['ok'])) {
+			// Deliberately not an exception. A failed download must not leave
+			// the module half-installed -- the recorder does not depend on any
+			// of this, and the Text to Speech tab explains itself.
+			$this->say('Media: could not install Piper -- ' . $result['message']);
+			$this->say('Media: recording still works. To retry: ./install/fetch-piper.sh');
+
+			return;
+		}
+
+		$status = $tts->status();
+
+		$this->say($status['available']
+			? 'Media: Text to Speech is ready.'
+			: 'Media: Piper is installed, but Text to Speech is not usable yet -- ' . $status['reason']);
+	}
+
+	/**
+	 * Say something to whoever is running fwconsole.
+	 *
+	 * out() is FreePBX's own console writer and is what module installs use;
+	 * it is not there when this class is reached from the web, where install()
+	 * is not reached either. Public because install() streams a subprocess
+	 * through it from a closure.
+	 */
+	public function say($message)
+	{
+		if (function_exists('out')) {
+			out($message);
+
+			return;
+		}
+
+		if (PHP_SAPI === 'cli') {
+			echo $message . PHP_EOL;
+		}
+	}
+
+	/**
+	 * The Piper runtime and the voices are left where they are: uninstalling
+	 * a module does not remove its directory, and re-installing would only
+	 * download them again.
+	 */
 	public function uninstall()
 	{
 	}

@@ -41,18 +41,33 @@ still points at it.
 ## Installing the Piper runtime
 
 The runtime (~52 MB) and the voice models (~63 MB each) are not kept in git.
-Install them with:
+**Installing the module fetches them:**
+
+```sh
+fwconsole ma install oryk_media
+```
+
+That downloads rhasspy/piper `2023.11.14-2` into `vendor/piper/` and
+`en_US-lessac-medium` into `voices/`, verifies the executable's checksum, and
+sets ownership, printing progress as it goes. Everything resolves relative to
+the module directory — there is no `/opt/tts` and no path compiled into the
+PHP — so the module stays portable and behaves the same way on the next box.
+
+It runs **once**. Later installs and upgrades find the files already there and
+skip the download entirely.
+
+Nothing about this is load-bearing. If the box has no route out, or the
+download fails, or you set `ORYK_MEDIA_SKIP_TTS_FETCH=1`, the install still
+succeeds and the microphone recorder is unaffected — only the Text to Speech
+tab reports itself unavailable. To do it later, or to repair it:
 
 ```sh
 cd /var/www/html/admin/modules/oryk_media
 ./install/fetch-piper.sh
 ```
 
-That downloads rhasspy/piper `2023.11.14-2` into `vendor/piper/` and
-`en_US-lessac-medium` into `voices/`, verifies the executable's checksum, and
-sets ownership. Everything resolves relative to the module directory — there is
-no `/opt/tts` and no path compiled into the PHP — so the module stays portable
-and a `fwconsole ma install` on another box behaves the same way.
+The PHP knows nothing about that script; it only ever looks for the files. So
+delivering them by package, internal mirror or `scp` works just as well.
 
 The Text to Speech tab reports what it found. When something is missing an
 administrator sees exactly which check failed and where it looked; everyone

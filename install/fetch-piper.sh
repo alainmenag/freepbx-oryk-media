@@ -3,12 +3,15 @@
 # install/fetch-piper.sh -- put the Piper runtime and a voice where the module
 # expects them.
 #
-# Run it from anywhere; it works on the module directory it lives in, which on
-# a FreePBX box is normally /var/www/html/admin/modules/oryk_media.
+# Normally you do not run this by hand: `fwconsole ma install oryk_media`
+# calls it through the module's install() hook, with --if-missing. Running it
+# yourself is for repairing an install, adding a voice, or installing on a box
+# that had no network when the module went on.
 #
-#     ./install/fetch-piper.sh              # runtime + the default voice
-#     ./install/fetch-piper.sh --runtime    # runtime only
-#     ./install/fetch-piper.sh --voice en_US-lessac-medium
+#     ./install/fetch-piper.sh                 runtime + the default voice
+#     ./install/fetch-piper.sh --if-missing    ... but do nothing if both are there
+#     ./install/fetch-piper.sh --runtime       runtime only
+#     ./install/fetch-piper.sh --voice NAME    one voice only
 #
 # Neither the runtime nor the voice models are kept in git -- together they are
 # well over 100 MB and neither ever changes. This script is how they arrive.
@@ -33,33 +36,97 @@ PIPER_SHA256="12672a94ca6716e5a8f335cfa68bf43bd9a33284960e3f9d16b85090bf7aab6b"
 
 VOICES_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 
+# Libraries Piper links against. Its RUNPATH is $ORIGIN, so these have to end
+# up in the same directory as the executable -- which is also how the module
+# decides whether the runtime is really here.
+LIBS="libespeak-ng.so.1 libpiper_phonemize.so.1 libonnxruntime.so.1.14.1"
+
 MODULE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 VENDOR="${MODULE_DIR}/vendor/piper"
 VOICE_DIR="${MODULE_DIR}/voices"
 
 WANT_RUNTIME=1
 WANT_VOICE="en_US-lessac-medium"
+IF_MISSING=0
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-	sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+	cat <<'USAGE'
+usage: fetch-piper.sh [--if-missing] [--runtime | --voice NAME]
+
+  --if-missing   do nothing when what was asked for is already installed
+  --runtime      install the Piper runtime only, no voice
+  --voice NAME   install one voice only, no runtime
+USAGE
 	exit "${1:-0}"
 }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
+		--if-missing) IF_MISSING=1; shift ;;
 		--runtime) WANT_VOICE=""; shift ;;
 		--voice) WANT_VOICE="${2:-}"; WANT_RUNTIME=0; shift 2 ;;
 		-h|--help) usage 0 ;;
-		*) echo "unknown option: $1" >&2; usage 1 ;;
+		*) printf 'unknown option: %s\n' "$1" >&2; usage 1 ;;
 	esac
 done
 
-say() { printf '%s\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+# ---------------------------------------------------------------------------
+# What is already here
+# ---------------------------------------------------------------------------
+
+runtime_installed() {
+	[ -x "${VENDOR}/piper" ] || return 1
+	[ -d "${VENDOR}/espeak-ng-data" ] || return 1
+
+	for lib in $LIBS; do
+		[ -e "${VENDOR}/${lib}" ] || return 1
+	done
+
+	return 0
+}
+
+voice_installed() {
+	[ -s "${VOICE_DIR}/${1}.onnx" ] && [ -s "${VOICE_DIR}/${1}.onnx.json" ]
+}
+
+if [ "$IF_MISSING" -eq 1 ]; then
+	if [ "$WANT_RUNTIME" -eq 1 ] && runtime_installed; then
+		WANT_RUNTIME=0
+	fi
+
+	if [ -n "$WANT_VOICE" ] && voice_installed "$WANT_VOICE"; then
+		WANT_VOICE=""
+	fi
+
+	if [ "$WANT_RUNTIME" -eq 0 ] && [ -z "$WANT_VOICE" ]; then
+		say "Piper runtime and voice are already installed; nothing to fetch."
+		exit 0
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v tar >/dev/null 2>&1 || die "tar is required"
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/oryk-piper.XXXXXX")
+# A progress bar is worth having at a prompt and is noise in an fwconsole log.
+if [ -t 1 ]; then
+	CURL="curl -fL --progress-bar --connect-timeout 20 --max-time 900 --retry 2"
+else
+	CURL="curl -fsSL --connect-timeout 20 --max-time 900 --retry 2"
+fi
+
+# Work beside the destination rather than in /tmp: /tmp is a small tmpfs on
+# plenty of PBX boxes and this needs ~80 MB of room, and staying on one
+# filesystem makes the install a rename rather than a copy across devices.
+# The trap takes it away again whichever way this exits.
+TMP=$(mktemp -d "${TMPDIR:-${MODULE_DIR}}/oryk-piper.XXXXXX") \
+	|| die "could not create a temporary directory"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 # ---------------------------------------------------------------------------
@@ -67,8 +134,9 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 # ---------------------------------------------------------------------------
 
 if [ "$WANT_RUNTIME" -eq 1 ]; then
-	say "Fetching Piper ${RELEASE} ..."
-	curl -fL --progress-bar -o "${TMP}/piper.tar.gz" "$PIPER_URL" \
+	say "Fetching the Piper runtime, release ${RELEASE} (~26 MB) ..."
+
+	$CURL -o "${TMP}/piper.tar.gz" "$PIPER_URL" \
 		|| die "could not download ${PIPER_URL}"
 
 	mkdir -p "${TMP}/x"
@@ -82,19 +150,19 @@ if [ "$WANT_RUNTIME" -eq 1 ]; then
 		GOT=$(shasum -a 256 "${TMP}/x/piper/piper" | cut -d' ' -f1)
 	else
 		GOT="$PIPER_SHA256"
-		say "warning: no sha256 tool; skipping checksum"
+		say "warning: no sha256 tool available; skipping the checksum"
 	fi
 
-	[ "$GOT" = "$PIPER_SHA256" ] || die "checksum mismatch: got ${GOT}"
+	[ "$GOT" = "$PIPER_SHA256" ] || die "checksum mismatch on the piper executable: got ${GOT}"
 
-	# Piper's RUNPATH is $ORIGIN, so its libraries have to end up in the same
-	# directory as the executable. Keep the upstream layout; do not tidy it
+	# Keep the upstream layout. Piper's RUNPATH is $ORIGIN, so its libraries
+	# have to stay in the same directory as the executable -- do not tidy this
 	# into bin/ and lib/.
 	mkdir -p "$VENDOR"
-	cp -a "${TMP}"/x/piper/. "$VENDOR/"
+	cp -a "${TMP}"/x/piper/. "${VENDOR}/"
 	chmod 755 "${VENDOR}/piper"
 
-	say "Installed runtime in ${VENDOR}"
+	say "Installed the runtime in ${VENDOR}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -106,31 +174,37 @@ if [ -n "$WANT_VOICE" ]; then
 		en_US-lessac-medium) VOICE_PATH="en/en_US/lessac/medium" ;;
 		*)
 			die "unknown voice '${WANT_VOICE}'. Add its huggingface path to this
-       script and an entry to lib/voices.php, and check its MODEL_CARD --
-       Piper voices are not uniformly licensed."
+       script and an entry to lib/voices.php, and read its MODEL_CARD --
+       Piper voices are licensed individually."
 			;;
 	esac
 
-	mkdir -p "$VOICE_DIR"
+	mkdir -p "$VOICE_DIR" "${MODULE_DIR}/LICENSES"
 
-	say "Fetching voice ${WANT_VOICE} (~63 MB) ..."
+	say "Fetching the voice ${WANT_VOICE} (~63 MB) ..."
 
+	# Download beside the destination and move into place at the end, so an
+	# interrupted fetch cannot leave a half-written model that looks installed.
 	for suffix in ".onnx" ".onnx.json"; do
-		curl -fL --progress-bar \
-			-o "${VOICE_DIR}/${WANT_VOICE}${suffix}" \
+		$CURL -o "${TMP}/voice${suffix}" \
 			"${VOICES_BASE}/${VOICE_PATH}/${WANT_VOICE}${suffix}" \
 			|| die "could not download ${WANT_VOICE}${suffix}"
 	done
 
-	curl -fL -s -o "${MODULE_DIR}/LICENSES/${WANT_VOICE}.MODEL_CARD.txt" \
-		"${VOICES_BASE}/${VOICE_PATH}/MODEL_CARD" \
-		|| say "warning: could not fetch the MODEL_CARD; record the voice's licence by hand"
+	[ -s "${TMP}/voice.onnx" ] || die "the downloaded model is empty"
 
-	say "Installed voice in ${VOICE_DIR}"
+	mv "${TMP}/voice.onnx" "${VOICE_DIR}/${WANT_VOICE}.onnx"
+	mv "${TMP}/voice.onnx.json" "${VOICE_DIR}/${WANT_VOICE}.onnx.json"
+
+	$CURL -o "${MODULE_DIR}/LICENSES/${WANT_VOICE}.MODEL_CARD.txt" \
+		"${VOICES_BASE}/${VOICE_PATH}/MODEL_CARD" \
+		|| say "warning: could not fetch the MODEL_CARD; record this voice's licence by hand"
+
+	say "Installed the voice in ${VOICE_DIR}"
 fi
 
 # ---------------------------------------------------------------------------
-# Ownership and the things this script cannot install
+# Ownership, and the thing this script cannot install
 # ---------------------------------------------------------------------------
 
 if id asterisk >/dev/null 2>&1; then
@@ -139,10 +213,10 @@ fi
 
 if ! command -v sox >/dev/null 2>&1; then
 	say ""
-	say "sox is not installed, and the module needs it to convert Piper output."
+	say "sox is not installed, and Text to Speech needs it to convert Piper's"
+	say "output. Install it and the feature turns itself on:"
 	say "  dnf install sox      (Rocky / RHEL, with EPEL)"
 	say "  apt install sox      (Debian / Ubuntu)"
 fi
 
-say ""
-say "Done. Reload the Media page; the Text to Speech tab reports what it finds."
+say "Done."

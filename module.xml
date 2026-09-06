@@ -17,9 +17,11 @@
 		*2.1.0* Second way to create media: local Piper text to speech, alongside
 		        the microphone recorder. Runs entirely on this server -- no API,
 		        no network. Optional: without the bundled runtime or sox the tab
-		        says so and recording is unaffected. Runtime and voices install
-		        with install/fetch-piper.sh; voices are an explicit server-side
-		        registry, never a directory scan.
+		        says so and recording is unaffected. The runtime and the default
+		        voice are fetched once by fwconsole ma install; a failed
+		        download never fails the install, and ORYK_MEDIA_SKIP_TTS_FETCH
+		        opts out. Voices are an explicit server-side registry, never a
+		        directory scan.
 		*2.0.0* Rewritten as a browser audio recorder: record from a mic in the
 		        admin UI and save straight into the custom sounds directory for
 		        use in System Recordings. Removes the dark mode / touch scroll

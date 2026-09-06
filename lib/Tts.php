@@ -36,6 +36,13 @@ class Tts
 	const PIPER_TIMEOUT = 180;
 	const SOX_TIMEOUT = 60;
 
+	/**
+	 * Ceiling on the install-time download. Generous on purpose: it is ~115 MB
+	 * over somebody else's link, and giving up early on a slow but working
+	 * connection is worse than waiting.
+	 */
+	const FETCH_TIMEOUT = 1800;
+
 	/** A voice key is a registry lookup, not a path. Shaped like one anyway. */
 	const VOICE_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/';
 
@@ -307,6 +314,23 @@ class Tts
 	}
 
 	/**
+	 * Whether everything install/fetch-piper.sh installs is here.
+	 *
+	 * Deliberately not the same question as status()['available']: this one
+	 * ignores sox, which is a system package the module does not install and
+	 * cannot fetch. A box missing sox is not a box that should re-download
+	 * 115 MB on every `fwconsole ma install`.
+	 */
+	public function runtimeInstalled()
+	{
+		return is_file($this->piperBinary())
+			&& is_executable($this->piperBinary())
+			&& $this->librariesPresent()
+			&& is_dir($this->espeakData())
+			&& !empty($this->availableVoices());
+	}
+
+	/**
 	 * Piper's RUNPATH is $ORIGIN, so its libraries have to sit beside it.
 	 * Check the sonames it actually links against rather than the whole set.
 	 */
@@ -468,6 +492,60 @@ class Tts
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* Installing the runtime                                              */
+	/* ------------------------------------------------------------------ */
+
+	public function fetchScript()
+	{
+		return $this->moduleDir . '/install/fetch-piper.sh';
+	}
+
+	/**
+	 * Run install/fetch-piper.sh, streaming its output as it arrives.
+	 *
+	 * Called from the module's install() hook, so this is `fwconsole ma
+	 * install` waiting on it: the output has to appear line by line rather
+	 * than in a lump at the end, or a three-minute download looks like a hang.
+	 *
+	 * --if-missing makes it a no-op when the files are already here, which is
+	 * what every reinstall and upgrade after the first one will be.
+	 *
+	 * The script is handed to /bin/sh explicitly rather than executed: the
+	 * exec bit is the first thing an SFTP deploy loses, and a download that
+	 * silently stops happening because of a file mode is a bad failure.
+	 *
+	 * @param callable|null $onLine Called with each line of output.
+	 */
+	public function installRuntime($onLine = null, $timeout = self::FETCH_TIMEOUT)
+	{
+		$script = $this->fetchScript();
+
+		if (!is_file($script)) {
+			return ['ok' => false, 'message' => basename($script) . ' is missing'];
+		}
+
+		$result = $this->run(
+			['/bin/sh', $script, '--if-missing'],
+			null,
+			$timeout,
+			$this->moduleDir,
+			$onLine
+		);
+
+		if ($result['timedout']) {
+			return ['ok' => false, 'message' => 'timed out after ' . $timeout . 's'];
+		}
+
+		if (!$result['ok']) {
+			$why = $result['stderr'] !== '' ? $result['stderr'] : 'exit ' . $result['code'];
+
+			return ['ok' => false, 'message' => $why];
+		}
+
+		return ['ok' => true, 'message' => ''];
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* Processes and temp files                                            */
 	/* ------------------------------------------------------------------ */
 
@@ -483,8 +561,12 @@ class Tts
 	 * $ORIGIN, but LD_LIBRARY_PATH is set as well so a relocated library
 	 * directory still resolves, and the locale is pinned because espeak-ng
 	 * cares about it.
+	 *
+	 * With $onLine set, complete lines are handed over as they arrive instead
+	 * of only being available once the child has finished -- which is what the
+	 * install-time download needs, and what synthesis has no use for.
 	 */
-	private function run(array $command, $stdin, $timeout, $cwd)
+	private function run(array $command, $stdin, $timeout, $cwd, $onLine = null)
 	{
 		$descriptors = [
 			0 => ['pipe', 'r'],
@@ -525,6 +607,7 @@ class Tts
 		stream_set_blocking($pipes[2], false);
 
 		$out = ['', ''];
+		$partial = [1 => '', 2 => ''];
 		$open = [1 => $pipes[1], 2 => $pipes[2]];
 		$deadline = microtime(true) + $timeout;
 		$timedout = false;
@@ -566,11 +649,32 @@ class Tts
 				if (strlen($out[$key - 1]) < 65536) {
 					$out[$key - 1] .= $chunk;
 				}
+
+				if ($onLine !== null) {
+					$partial[$key] .= $chunk;
+
+					while (($break = strpos($partial[$key], "\n")) !== false) {
+						$line = rtrim(substr($partial[$key], 0, $break), "\r");
+						$partial[$key] = substr($partial[$key], $break + 1);
+
+						call_user_func($onLine, $line);
+					}
+				}
 			}
 		}
 
 		foreach ($open as $pipe) {
 			fclose($pipe);
+		}
+
+		// Whatever the child wrote without a trailing newline -- an error
+		// message on the way out often looks exactly like this.
+		if ($onLine !== null) {
+			foreach ($partial as $rest) {
+				if (trim($rest) !== '') {
+					call_user_func($onLine, rtrim($rest, "\r"));
+				}
+			}
 		}
 
 		if ($timedout) {
