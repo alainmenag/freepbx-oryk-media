@@ -61,6 +61,22 @@
 		return new Date(unixSeconds * 1000).toLocaleString();
 	}
 
+	/**
+	 * A name for a recording nobody named: recording-YYYYMMDD-HHMMSS.
+	 *
+	 * Local time, because it is a label for whoever made it. It satisfies
+	 * NAME_RE, and the seconds make a collision on one machine a curiosity
+	 * rather than something to design around -- Save still confirms before it
+	 * replaces anything.
+	 */
+	function stampName(prefix) {
+		var d = new Date();
+
+		return (prefix || 'recording') + '-' +
+			d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' +
+			pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+	}
+
 	function escapeHtml(value) {
 		return String(value).replace(/[&<>"']/g, function (c) {
 			return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -150,6 +166,73 @@
 		});
 	}
 
+	/**
+	 * post(), for a command that answers with a file rather than with JSON.
+	 *
+	 * Generating speech hands back the audio itself -- there is no name and
+	 * nothing saved, so there is nothing to describe. A failure still has to
+	 * say what went wrong, so it comes back as JSON where the audio would have
+	 * been; the content type is what tells them apart.
+	 *
+	 * Resolves { blob, header } on audio, { json, header } on a refusal.
+	 */
+	function postBinary(data) {
+		return new Promise(function (resolve, reject) {
+			var xhr = new XMLHttpRequest();
+
+			xhr.open('POST', AJAX, true);
+			xhr.responseType = 'blob';
+
+			xhr.onload = function () {
+				var type = xhr.getResponseHeader('Content-Type') || '';
+				var header = function (name) {
+					return xhr.getResponseHeader(name);
+				};
+
+				if (type.indexOf('application/json') !== -1) {
+					var reader = new FileReader();
+
+					reader.onload = function () {
+						var body = null;
+
+						try {
+							body = JSON.parse(reader.result);
+						} catch (e) {
+							body = null;
+						}
+
+						if (!body) {
+							reject(new Error('The server sent back something unreadable.'));
+							return;
+						}
+
+						resolve({ json: body, header: header });
+					};
+
+					reader.onerror = function () {
+						reject(new Error('The server sent back something unreadable.'));
+					};
+
+					reader.readAsText(xhr.response);
+					return;
+				}
+
+				if (!xhr.response || !xhr.response.size) {
+					reject(new Error('The server sent back nothing.'));
+					return;
+				}
+
+				resolve({ blob: xhr.response, header: header });
+			};
+
+			xhr.onerror = function () {
+				reject(new Error('Could not reach the server.'));
+			};
+
+			xhr.send(data);
+		});
+	}
+
 	/** A form body with the module and command already filled in. */
 	function command(name, fields) {
 		var form = new FormData();
@@ -216,8 +299,10 @@
 		clock: clock,
 		when: when,
 		escapeHtml: escapeHtml,
+		stampName: stampName,
 		toast: toast,
 		post: post,
+		postBinary: postBinary,
 		command: command,
 		pageUrl: pageUrl,
 		listUrl: listUrl,

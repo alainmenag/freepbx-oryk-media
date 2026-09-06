@@ -21,8 +21,11 @@ use FreePBX_Helpers;
  * bundled runtime or sox is missing, the module says so and the recorder
  * carries on working. Nothing is sent off the machine either way.
  *
- * Both paths end in the same place, as the same kind of file, listed and
- * deleted by the same code.
+ * Neither source writes to the sounds directory on its own. Generating speech
+ * hands the WAV back to the browser out of a temporary directory that does not
+ * outlive the request, exactly as the microphone hands back what it encoded;
+ * both then arrive at saveUpload() when -- and only when -- somebody saves.
+ * One upload path, one name rule, one overwrite handshake.
  *
  * The module is two pages, in the shape the rest of FreePBX uses: a list of
  * what exists, and an editor for one recording. See showPage().
@@ -147,6 +150,14 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 				'name' => 'oryksave',
 				'id' => 'oryksave',
 				'value' => _('Save'),
+			],
+			// Takes the temporary recording to the browser's downloads and
+			// writes nothing here. It is an action on the current take, like
+			// Save, which is why it belongs on this bar rather than in a tab.
+			'orykdownload' => [
+				'name' => 'orykdownload',
+				'id' => 'orykdownload',
+				'value' => _('Download'),
 			],
 			'orykclose' => [
 				'name' => 'orykclose',
@@ -467,6 +478,20 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 		return null;
 	}
 
+	/**
+	 * What to call a recording nobody named.
+	 *
+	 * The name is optional in the editor, so this is the other half of that:
+	 * a timestamp is unique enough in practice, satisfies NAME_PATTERN, and
+	 * sorts sensibly in the list. The browser generates the same shape so that
+	 * a downloaded file and a saved one agree; this is what decides it when a
+	 * request arrives without one.
+	 */
+	public static function defaultName()
+	{
+		return 'recording-' . date('Ymd-His');
+	}
+
 	public function isValidName($name)
 	{
 		return is_string($name) && (bool) preg_match(self::NAME_PATTERN, $name);
@@ -592,6 +617,14 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	 */
 	public function saveUpload($name, $overwrite = false, $file = null)
 	{
+		// No name is not a refusal: the editor's name field is optional, and
+		// an unnamed recording is filed under a timestamp rather than bounced.
+		$name = is_string($name) ? trim($name) : '';
+
+		if ($name === '') {
+			$name = self::defaultName();
+		}
+
 		if (!$this->isValidName($name)) {
 			return ['status' => false, 'message' => 'Name must be letters, numbers, dot, dash or underscore -- no spaces.'];
 		}
@@ -738,49 +771,85 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	}
 
 	/**
-	 * Synthesise $text and save it as <name>.wav, exactly as if it had been
-	 * recorded from the microphone.
+	 * Synthesise $text and hand the WAV straight back to the browser.
 	 *
-	 * The name is checked -- and the "already exists" question settled -- before
-	 * Piper is started, so a request that was never going to be saved does not
-	 * spend a minute of CPU first.
+	 * Nothing is written to the sounds directory here, and no name is asked
+	 * for: what comes out is a temporary recording, held in the page next to
+	 * one from the microphone and treated identically from there on. It is
+	 * saved only if somebody saves it, through the same upload path -- so the
+	 * name rule, the overwrite handshake and the ownership fixups all keep
+	 * happening in exactly one place.
+	 *
+	 * The bytes are read before the temp directory is swept, so nothing of
+	 * ours is still on disk by the time the response starts. Nothing may be
+	 * echoed before this, and nothing runs after it.
 	 */
-	public function generateTts($name, $text, $voice, $rate, $overwrite = false)
+	private function streamTtsPreview()
 	{
-		if (!$this->isValidName($name)) {
-			return ['status' => false, 'message' => 'Name must be letters, numbers, dot, dash or underscore -- no spaces.'];
-		}
-
-		if (!$overwrite && $this->recordingExists($name)) {
-			return ['status' => false, 'exists' => true, 'message' => 'A recording called "' . $name . '" already exists.'];
-		}
-
-		if (!$this->isCustomDirWritable()) {
-			return ['status' => false, 'message' => 'Cannot write ' . $this->getCustomDir() . '.'];
-		}
-
 		$tts = $this->tts();
-		$made = $tts->synthesize($text, $voice, $rate);
+
+		// Synthesis is CPU-bound and a long text can outlast the default ajax
+		// time limit, which would kill PHP mid-Piper and leave the browser
+		// with nothing to show for it.
+		@set_time_limit(\FreePBX\modules\OrykMedia\Tts::PIPER_TIMEOUT + 60);
+
+		$made = $tts->synthesize(
+			isset($_REQUEST['text']) ? $_REQUEST['text'] : '',
+			isset($_REQUEST['voice']) ? $_REQUEST['voice'] : '',
+			isset($_REQUEST['rate']) ? $_REQUEST['rate'] : 0
+		);
 
 		if (empty($made['status'])) {
-			return $made;
-		}
-
-		try {
-			$stored = $this->storeWav($name, $made['path'], $overwrite, false);
-		} finally {
-			// Whatever happened above, nothing of ours is left in /tmp.
 			$tts->cleanup();
+			$this->sendJson($made);
 		}
 
-		if (!empty($stored['status'])) {
-			$stored['seconds'] = $made['seconds'];
-			$stored['rate'] = $made['rate'];
-			$stored['voice'] = $voice;
-			$stored['message'] = 'Generated and saved ' . basename($stored['path']);
+		$audio = (string) @file_get_contents($made['path']);
+
+		// Read, then swept: the file has done its job and the request still
+		// has the only copy.
+		$tts->cleanup();
+
+		if ($audio === '') {
+			$this->sendJson(['status' => false, 'message' => 'The generated audio could not be read.']);
 		}
 
-		return $stored;
+		while (ob_get_level() > 0) {
+			ob_end_clean();
+		}
+
+		header('Content-Type: audio/wav');
+		header('Content-Length: ' . strlen($audio));
+		header('Content-Disposition: inline; filename="preview.wav"');
+		header('Cache-Control: no-store');
+		header('X-Content-Type-Options: nosniff');
+
+		// What the player wants to say about it. The audio itself is the
+		// answer; these are the two things the browser cannot cheaply work out.
+		header('X-Oryk-Rate: ' . (int) $made['rate']);
+		header('X-Oryk-Seconds: ' . $made['seconds']);
+
+		echo $audio;
+		exit;
+	}
+
+	/**
+	 * Answer a raw-response command with JSON instead, and stop.
+	 *
+	 * Used where the successful answer is a file: a refusal still has to be
+	 * readable, and the content type is what tells the browser which it got.
+	 */
+	private function sendJson(array $body)
+	{
+		while (ob_get_level() > 0) {
+			ob_end_clean();
+		}
+
+		header('Content-Type: application/json');
+		header('Cache-Control: no-store');
+
+		echo json_encode($body);
+		exit;
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -958,20 +1027,28 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	}
 
 	/**
-	 * Raw (non-JSON) ajax responses. Returning true tells FreePBX we have
-	 * already written the response; play() exits before that matters.
+	 * Raw (non-JSON) ajax responses: the two commands whose answer is audio.
+	 *
+	 * Returning true tells FreePBX we have already written the response; both
+	 * of these exit before that matters.
 	 */
 	public function ajaxCustomHandler()
 	{
 		$command = isset($_REQUEST['command']) ? $_REQUEST['command'] : '';
 
-		if ($command !== 'play') {
-			return false;
+		if ($command === 'play') {
+			$this->streamRecording(isset($_REQUEST['name']) ? $_REQUEST['name'] : '');
+
+			return true;
 		}
 
-		$this->streamRecording(isset($_REQUEST['name']) ? $_REQUEST['name'] : '');
+		if ($command === 'generateTts') {
+			$this->streamTtsPreview();
 
-		return true;
+			return true;
+		}
+
+		return false;
 	}
 
 	public function ajaxHandler()
@@ -1005,22 +1082,10 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 				];
 
 			case 'generateTts':
-				$overwrite = !empty($_REQUEST['overwrite']) && $_REQUEST['overwrite'] !== 'false';
-
-				// Synthesis is CPU-bound and a long text can outlast the default
-				// ajax time limit, which would kill PHP mid-Piper and leave the
-				// browser with nothing to show for it. tts() first: it is what
-				// loads the class the constant lives on.
-				$this->tts();
-				@set_time_limit(\FreePBX\modules\OrykMedia\Tts::PIPER_TIMEOUT + 60);
-
-				return $this->generateTts(
-					$name,
-					isset($_REQUEST['text']) ? $_REQUEST['text'] : '',
-					isset($_REQUEST['voice']) ? $_REQUEST['voice'] : '',
-					isset($_REQUEST['rate']) ? $_REQUEST['rate'] : 0,
-					$overwrite
-				);
+				// Only reached if ajaxCustomHandler is not honored on this
+				// version. Answers with the audio either way.
+				$this->streamTtsPreview();
+				return null;
 
 			case 'play':
 				// Only reached if ajaxCustomHandler is not honored on this version.

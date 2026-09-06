@@ -3,9 +3,13 @@
  * views/edit.php -- make one recording.
  *
  * Reached at ?display=oryk_media&edit=<name> to replace an existing recording,
- * or ?display=oryk_media&edit= (present, empty) to write a new one. Two ways
- * in, on tabs: the browser microphone, and local Piper text to speech. Both
- * end in the same file, in the same place, under the name in the box.
+ * or ?display=oryk_media&edit= (present, empty) to write a new one.
+ *
+ * The page is one recording editor with two sources on tabs: the browser
+ * microphone, and local Piper text to speech. Either produces the same thing --
+ * a temporary WAV held in the browser -- and everything after that is shared:
+ * one player, one name, one output sample rate, and the action bar's Save,
+ * Download and Close. Nothing is written to the sounds directory until Save.
  *
  * Nothing here lists, plays back or deletes what already exists -- that is
  * views/list.php, which Close and a finished Save both return to.
@@ -81,6 +85,64 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 					</div>
 				<?php endif; ?>
 
+				<!-- ---------------------------------------------------- -->
+				<!-- Output: one name and one sample rate for the editor, -->
+				<!-- whichever tab below made the audio.                  -->
+				<!-- ---------------------------------------------------- -->
+
+				<div class="element-container">
+					<div class="row">
+						<div class="form-group">
+							<div class="col-md-4">
+								<label class="control-label" for="orykMediaName">Save as</label>
+							</div>
+							<div class="col-md-8">
+								<div class="input-group">
+									<input type="text" id="orykMediaName" class="form-control"
+										placeholder="main-greeting" autocomplete="off"
+										value="<?php echo $h($prefill); ?>">
+									<span class="input-group-addon">.wav</span>
+								</div>
+							</div>
+						</div>
+					</div>
+					<div class="row">
+						<div class="col-md-12">
+							<span class="help-block fpbx-help-block">
+								Optional &mdash; leave it blank and it is saved as
+								<code>recording-YYYYMMDD-HHMMSS</code>. Letters, numbers, dot,
+								dash and underscore. Lands in
+								<code><?php echo $h($customDir); ?></code> and shows up in
+								System Recordings as <code>custom/&lt;name&gt;</code>.
+							</span>
+						</div>
+					</div>
+				</div>
+
+				<div class="element-container">
+					<div class="row">
+						<div class="form-group">
+							<div class="col-md-4">
+								<label class="control-label" for="orykMediaRate">Sample rate</label>
+							</div>
+							<div class="col-md-8">
+								<select id="orykMediaRate" class="form-control">
+									<option value="8000" selected>8 kHz &mdash; standard telephony</option>
+									<option value="16000">16 kHz &mdash; wideband (G.722)</option>
+								</select>
+							</div>
+						</div>
+					</div>
+					<div class="row">
+						<div class="col-md-12">
+							<span class="help-block fpbx-help-block">
+								Applies to both sources below. 16-bit mono PCM WAV either way,
+								which Asterisk plays as-is.
+							</span>
+						</div>
+					</div>
+				</div>
+
 				<ul class="nav nav-tabs oryk-methods" role="tablist">
 					<li role="presentation" class="active">
 						<a href="#orykMediaMic" data-oryk-tab="orykMediaMic" role="tab">
@@ -97,7 +159,7 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 				<div class="tab-content oryk-method-panels">
 
 					<!-- ---------------------------------------------------- -->
-					<!-- Method 1: microphone                                 -->
+					<!-- Source 1: microphone                                 -->
 					<!-- ---------------------------------------------------- -->
 
 					<div class="tab-pane active" id="orykMediaMic" role="tabpanel">
@@ -126,30 +188,14 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 							</div>
 						</div>
 
-						<div class="element-container">
-							<div class="row">
-								<div class="form-group">
-									<div class="col-md-4">
-										<label class="control-label" for="orykMediaRate">Sample rate</label>
-									</div>
-									<div class="col-md-8">
-										<select id="orykMediaRate" class="form-control">
-											<option value="8000" selected>8 kHz &mdash; standard telephony</option>
-											<option value="16000">16 kHz &mdash; wideband (G.722)</option>
-										</select>
-									</div>
-								</div>
-							</div>
-							<div class="row">
-								<div class="col-md-12">
-									<span class="help-block fpbx-help-block">
-										Saved as 16-bit mono PCM WAV, which Asterisk plays as-is.
-									</span>
-								</div>
-							</div>
-						</div>
-
 						<div class="oryk-recorder">
+							<div class="oryk-meter" aria-hidden="true">
+								<div id="orykMediaMeterFill" class="oryk-meter-fill"></div>
+							</div>
+
+							<canvas id="orykMediaScope" class="oryk-scope" height="90"
+								title="Click to open the microphone and check levels"></canvas>
+
 							<div class="oryk-recorder-controls">
 								<button type="button" id="orykMediaRecord" class="btn btn-danger btn-lg">
 									<i class="fa fa-circle"></i> <span>Record</span>
@@ -159,67 +205,12 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 								</button>
 								<span id="orykMediaTimer" class="oryk-timer">00:00:00:00</span>
 							</div>
-
-							<div class="oryk-meter" aria-hidden="true">
-								<div id="orykMediaMeterFill" class="oryk-meter-fill"></div>
-							</div>
-
-							<canvas id="orykMediaScope" class="oryk-scope" height="90"
-								title="Click to open the microphone and check levels"></canvas>
-						</div>
-
-						<div id="orykMediaReview" class="oryk-review hidden">
-							<audio id="orykMediaPreview" controls class="oryk-preview"></audio>
-
-							<div id="orykMediaState" class="oryk-state">Ready</div>
-
-							<div id="orykMediaSaveForm">
-							<div class="element-container">
-								<div class="row">
-									<div class="form-group">
-										<div class="col-md-4">
-											<label class="control-label" for="orykMediaName">Save as</label>
-										</div>
-										<div class="col-md-8">
-											<div class="input-group">
-												<input type="text" id="orykMediaName" class="form-control"
-													placeholder="main-greeting" autocomplete="off"
-													value="<?php echo $h($prefill); ?>">
-												<span class="input-group-addon">.wav</span>
-											</div>
-										</div>
-									</div>
-								</div>
-								<div class="row">
-									<div class="col-md-12">
-										<span class="help-block fpbx-help-block">
-											Letters, numbers, dot, dash and underscore. Lands in
-											<code><?php echo $h($customDir); ?></code> and shows up in
-											System Recordings as <code>custom/&lt;name&gt;</code>.
-										</span>
-									</div>
-								</div>
-							</div>
-
-							<div class="oryk-review-actions">
-								<button type="button" id="orykMediaSave" class="btn btn-primary">
-									<i class="fa fa-save"></i> Save
-								</button>
-								<button type="button" id="orykMediaDownload" class="btn btn-default">
-									<i class="fa fa-download"></i> Download
-								</button>
-								<button type="button" id="orykMediaDiscard" class="btn btn-link">
-									Discard
-								</button>
-								<span id="orykMediaSaveState" class="oryk-save-state"></span>
-							</div>
-							</div>
 						</div>
 
 					</div>
 
 					<!-- ---------------------------------------------------- -->
-					<!-- Method 2: Piper text to speech                       -->
+					<!-- Source 2: Piper text to speech                       -->
 					<!-- ---------------------------------------------------- -->
 
 					<div class="tab-pane" id="orykMediaTts" role="tabpanel">
@@ -253,8 +244,6 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 							<?php endif; ?>
 
 						<?php else: ?>
-
-							<div id="orykTtsError" class="alert alert-danger hidden"></div>
 
 							<div class="element-container">
 								<div class="row">
@@ -295,76 +284,13 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 								</div>
 							</div>
 
-							<div class="element-container">
-								<div class="row">
-									<div class="form-group">
-										<div class="col-md-4">
-											<label class="control-label" for="orykTtsRate">Sample rate</label>
-										</div>
-										<div class="col-md-8">
-											<select id="orykTtsRate" class="form-control">
-												<option value="8000" selected>8 kHz &mdash; standard telephony</option>
-												<option value="16000">16 kHz &mdash; wideband (G.722)</option>
-											</select>
-										</div>
-									</div>
-								</div>
-								<div class="row">
-									<div class="col-md-12">
-										<span class="help-block fpbx-help-block">
-											Generated on this server and resampled to 16-bit mono PCM WAV.
-											Nothing is sent anywhere.
-										</span>
-									</div>
-								</div>
-							</div>
-
-							<div class="element-container">
-								<div class="row">
-									<div class="form-group">
-										<div class="col-md-4">
-											<label class="control-label" for="orykTtsName">Save as</label>
-										</div>
-										<div class="col-md-8">
-											<div class="input-group">
-												<input type="text" id="orykTtsName" class="form-control"
-													placeholder="main-greeting" autocomplete="off"
-													value="<?php echo $h($prefill); ?>">
-												<span class="input-group-addon">.wav</span>
-											</div>
-										</div>
-									</div>
-								</div>
-								<div class="row">
-									<div class="col-md-12">
-										<span class="help-block fpbx-help-block">
-											Letters, numbers, dot, dash and underscore. Lands in
-											<code><?php echo $h($customDir); ?></code> and shows up in
-											System Recordings as <code>custom/&lt;name&gt;</code>.
-										</span>
-									</div>
-								</div>
-							</div>
-
 							<div class="oryk-review-actions">
-								<button type="button" id="orykTtsGenerate" class="btn btn-primary">
+								<button type="button" id="orykTtsGenerate" class="btn btn-danger btn-lg">
 									<i class="fa fa-play-circle"></i> Generate
 								</button>
-								<span id="orykTtsState" class="oryk-save-state"></span>
-							</div>
-
-							<div id="orykTtsReview" class="oryk-review hidden">
-								<audio id="orykTtsPreview" controls class="oryk-preview"></audio>
-								<div id="orykTtsMeta" class="oryk-state"></div>
-								<div class="oryk-review-actions">
-									<button type="button" id="orykTtsDone" class="btn btn-default">
-										<i class="fa fa-check"></i> Done
-									</button>
-									<span class="help-block fpbx-help-block oryk-inline-help">
-										Written already. Generate again to replace it, or Done to
-										go back to the list.
-									</span>
-								</div>
+								<span id="orykMediaStatus" class="help-block fpbx-help-block oryk-inline-help">
+									Generated on this server and nothing is sent anywhere.
+								</span>
 							</div>
 
 						<?php endif; ?>
@@ -372,6 +298,26 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 					</div>
 
 				</div>
+
+				<!-- ---------------------------------------------------- -->
+				<!-- The current recording, whichever tab made it.        -->
+				<!-- ---------------------------------------------------- -->
+
+				<div id="orykMediaReview" class="oryk-review hidden">
+					<audio id="orykMediaPreview" controls class="oryk-preview"></audio>
+
+					<div id="orykMediaMeta" class="oryk-state"></div>
+
+					<div class="oryk-review-actions" id="orykMediaTakeActions">
+						<button type="button" id="orykMediaDiscard" class="btn btn-link">
+							Discard
+						</button>
+						<span class="help-block fpbx-help-block oryk-inline-help">
+							Not saved yet.
+						</span>
+					</div>
+				</div>
+
 			</div>
 
 		</div>
@@ -393,5 +339,6 @@ $playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editi
 	};
 </script>
 <script type="text/javascript" src="<?php echo $h($assetUrl('js/shared.js')); ?>"></script>
+<script type="text/javascript" src="<?php echo $h($assetUrl('js/editor.js')); ?>"></script>
 <script type="text/javascript" src="<?php echo $h($assetUrl('js/recorder.js')); ?>"></script>
 <script type="text/javascript" src="<?php echo $h($assetUrl('js/tts.js')); ?>"></script>

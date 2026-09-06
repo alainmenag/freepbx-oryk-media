@@ -61,7 +61,7 @@
 			' <a class="btn btn-default btn-sm" href="' + S.escapeHtml(S.editUrl(row.name)) + '" role="button">' +
 			'<i class="fa fa-pencil"></i> Edit</a>' +
 			' <button type="button" class="btn btn-default btn-sm" data-oryk-delete="' +
-			S.escapeHtml(row.name) + '" title="Delete"><i class="fa fa-trash"></i></button>' +
+			S.escapeHtml(row.name) + '" title="Delete"><i class="fa fa-trash" style="margin: 0;"></i></button>' +
 			'</div>';
 	};
 
@@ -162,7 +162,7 @@
 					button
 						.removeAttr('data-oryk-armed')
 						.attr('class', 'btn btn-default btn-sm')
-						.html('<i class="fa fa-trash"></i>');
+						.html('<i class="fa fa-trash" style="margin: 0;"></i>');
 				}
 			}, 4000);
 		});

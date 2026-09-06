@@ -7,7 +7,10 @@
  */
 
 .oryk-media .oryk-recorder {
-	margin: 18px 0 8px;
+	margin-top: 15px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
 }
 
 .oryk-media .oryk-recorder-controls {
@@ -55,7 +58,7 @@
 
 .oryk-media .oryk-meter {
 	height: 8px;
-	margin: 14px 0 10px;
+	margin: 0;
 	border-radius: 4px;
 	background: #e6e9ed;
 	overflow: hidden;
@@ -99,19 +102,6 @@
 	gap: 10px;
 	flex-wrap: wrap;
 	margin-top: 10px;
-}
-
-.oryk-media .oryk-save-state {
-	font-size: 13px;
-	color: #777;
-}
-
-.oryk-media .oryk-save-state.is-good {
-	color: #35b37e;
-}
-
-.oryk-media .oryk-save-state.is-bad {
-	color: #c9302c;
 }
 
 /* The actions cell is a flex row so the player, Edit and Delete stay on one
@@ -196,7 +186,7 @@
 }
 
 /* ---------------------------------------------------------------------- */
-/* Create Media: the two methods                                          */
+/* The editor: two sources, one recording                                 */
 /* ---------------------------------------------------------------------- */
 
 .oryk-media .oryk-methods {
