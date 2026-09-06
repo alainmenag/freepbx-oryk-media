@@ -15,6 +15,8 @@
 
 	var CFG = (window.OrykMedia && window.OrykMedia.config) || {};
 	var MAX_SECONDS = 20 * 60;
+	var TICK_MS = 50;        // timer repaint interval; the clock shows hundredths
+	var ZERO = '00:00:00:00';
 	var AJAX = 'ajax.php';
 	var MODULE = 'oryk_media';
 
@@ -25,7 +27,6 @@
 	var analyser = null;
 	var capture = null;      // AudioWorkletNode or ScriptProcessorNode
 	var sink = null;         // muted gain, only so ScriptProcessor is pulled
-	var rafId = null;
 
 	var chunks = [];         // Float32Array pieces at ctx.sampleRate
 	var frames = 0;
@@ -33,15 +34,11 @@
 	var paused = false;
 	var startedAt = 0;
 	var elapsedBefore = 0;
-	var timerId = null;
-	var timerGen = 0;
 	var lastClock = '';
-	var drawGen = 0;
 	var opening = false;
 
-	var takeBlob = null;     // encoded WAV of the current take
-	var takeUrl = null;
-	var monitorUrl = null;   // scratch WAV of the paused-so-far audio
+	var takeBlob = null;     // encoded WAV of the finished take, null until stop
+	var previewUrl = null;   // object URL behind the player: take or paused monitor
 	var monitoring = false;
 
 	/* ------------------------------------------------------------------ */
@@ -62,6 +59,60 @@
 		if (node) {
 			node.textContent = value;
 		}
+	}
+
+	/**
+	 * A repeating loop that can actually be stopped. Cancelling the handle is
+	 * not enough — it only ever points at the most recent run, so a second
+	 * loop would leave one behind that nothing could reach. Each run carries
+	 * its generation; stop() bumps it and strays retire on their next wake.
+	 * Body returns false to stop.
+	 */
+	function makeLoop(schedule, cancel, body) {
+		var gen = 0;
+		var handle = null;
+
+		function stop() {
+			gen++;
+
+			if (handle !== null) {
+				cancel(handle);
+				handle = null;
+			}
+		}
+
+		function run(mine) {
+			if (mine !== gen) {
+				return;
+			}
+
+			handle = null;
+
+			if (body() === false) {
+				return;
+			}
+
+			handle = schedule(function () {
+				run(mine);
+			});
+		}
+
+		return {
+			start: function () {
+				stop();
+				run(gen);
+			},
+			stop: stop
+		};
+	}
+
+	function setButton(node, label, icon) {
+		if (!node) {
+			return;
+		}
+
+		node.querySelector('span').textContent = label;
+		node.querySelector('i').className = 'fa fa-' + icon;
 	}
 
 	function fail(message) {
@@ -377,15 +428,7 @@
 	/* Meter and scope                                                     */
 	/* ------------------------------------------------------------------ */
 
-	function draw(gen) {
-		if (gen !== drawGen) {
-			return;
-		}
-
-		rafId = window.requestAnimationFrame(function () {
-			draw(gen);
-		});
-
+	function drawFrame() {
 		if (!analyser || !el.scope) {
 			return;
 		}
@@ -440,30 +483,23 @@
 		g.stroke();
 	}
 
-	function startDrawing() {
-		stopDrawing();
-		draw(drawGen);
-	}
+	var scopeLoop = makeLoop(
+		function (fn) { return window.requestAnimationFrame(fn); },
+		function (id) { window.cancelAnimationFrame(id); },
+		drawFrame
+	);
 
 	function stopDrawing() {
-		drawGen++;
+		scopeLoop.stop();
 
-		if (rafId !== null) {
-			window.cancelAnimationFrame(rafId);
-			rafId = null;
-		}
 		if (el.meter) {
 			el.meter.style.width = '0%';
 			el.meter.classList.remove('is-hot');
 		}
 	}
 
-	function elapsed() {
-		return elapsedBefore + (recording && !paused ? (Date.now() - startedAt) / 1000 : 0);
-	}
-
 	function paintTimer() {
-		var value = clock(elapsed());
+		var value = clock(elapsedBefore + (recording && !paused ? (Date.now() - startedAt) / 1000 : 0));
 
 		if (value !== lastClock) {
 			lastClock = value;
@@ -471,48 +507,23 @@
 		}
 	}
 
-	/**
-	 * Each loop carries the generation it was born in. stopTimer() bumps the
-	 * generation, so any chain still in flight — including one the shared
-	 * timerId has lost track of — retires itself on its next wake instead of
-	 * rescheduling forever.
-	 */
-	function tick(gen) {
-		if (gen !== timerGen) {
-			return;
+	var timerLoop = makeLoop(
+		function (fn) { return window.setTimeout(fn, TICK_MS); },
+		function (id) { window.clearTimeout(id); },
+		function () {
+			if (!recording || paused) {
+				return false;
+			}
+
+			paintTimer();
 		}
-
-		timerId = null;
-
-		if (!recording || paused) {
-			return;
-		}
-
-		paintTimer();
-		timerId = window.setTimeout(function () {
-			tick(gen);
-		}, 50);
-	}
-
-	function startTimer() {
-		stopTimer();
-		tick(timerGen);
-	}
-
-	function stopTimer() {
-		timerGen++;
-
-		if (timerId !== null) {
-			window.clearTimeout(timerId);
-			timerId = null;
-		}
-	}
+	);
 
 	function resetTimer() {
-		stopTimer();
+		timerLoop.stop();
 		elapsedBefore = 0;
-		lastClock = '00:00:00:00';
-		text(el.timer, '00:00:00:00');
+		lastClock = ZERO;
+		text(el.timer, ZERO);
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -539,18 +550,17 @@
 
 			el.record.classList.remove('btn-danger');
 			el.record.classList.add('btn-default');
-			el.record.querySelector('span').textContent = 'Stop';
-			el.record.querySelector('i').className = 'fa fa-stop';
+			setButton(el.record, 'Stop', 'stop');
 			show(el.pause, true);
 
-			startDrawing();
+			scopeLoop.start();
 			lastClock = '';
-			startTimer();
+			timerLoop.start();
 		}).catch(function (error) {
 			opening = false;
 			recording = false;
 			paused = false;
-			stopTimer();
+			timerLoop.stop();
 			stopDrawing();
 			fail(micMessage(error));
 		});
@@ -572,6 +582,52 @@
 		return (error && error.message) || 'Could not open the microphone.';
 	}
 
+	/**
+	 * Encode whatever is in `chunks` at the selected rate. Non-destructive:
+	 * flatten() copies, so a paused take can be auditioned and then resumed.
+	 */
+	function buildWav() {
+		var rate = parseInt(el.rate.value, 10) || 8000;
+
+		return resample(flatten(chunks, frames), ctx.sampleRate, rate).then(function (samples) {
+			var blob = encodeWav(samples, rate);
+
+			return {
+				blob: blob,
+				url: URL.createObjectURL(blob),
+				seconds: samples.length / rate,
+				rate: rate
+			};
+		});
+	}
+
+	function showPreview(url, label, saveable) {
+		releasePreview();
+		previewUrl = url;
+
+		el.preview.src = url;
+		text(el.state, label);
+		show(el.saveForm, saveable);
+		show(el.review, true);
+	}
+
+	function releasePreview() {
+		if (previewUrl) {
+			URL.revokeObjectURL(previewUrl);
+			previewUrl = null;
+		}
+	}
+
+	function clearPreview() {
+		if (!el.preview.paused) {
+			el.preview.pause();
+		}
+
+		el.preview.removeAttribute('src');
+		releasePreview();
+		show(el.review, false);
+	}
+
 	function stop() {
 		if (!recording) {
 			return;
@@ -586,20 +642,17 @@
 
 		el.record.classList.add('btn-danger');
 		el.record.classList.remove('btn-default');
-		el.record.querySelector('span').textContent = 'Record';
-		el.record.querySelector('i').className = 'fa fa-circle';
+		setButton(el.record, 'Record', 'circle');
 		show(el.pause, false);
-		el.pause.querySelector('span').textContent = 'Pause';
-		el.pause.querySelector('i').className = 'fa fa-pause';
+		setButton(el.pause, 'Pause', 'pause');
 
 		stopDrawing();
 		closeMic();
-		clearMonitor();
-
+		clearPreview();
 		resetTimer();
 
-		text(el.state, 'Encoding');
 		el.state.className = 'oryk-state';
+		text(el.state, 'Encoding');
 
 		if (!frames) {
 			fail('Nothing was captured.');
@@ -607,20 +660,12 @@
 			return;
 		}
 
-		var rate = parseInt(el.rate.value, 10) || 8000;
-		var captured = flatten(chunks, frames);
-		var sourceRate = ctx.sampleRate;
+		buildWav().then(function (take) {
+			chunks = [];
+			takeBlob = take.blob;
 
-		chunks = [];
-
-		resample(captured, sourceRate, rate).then(function (samples) {
-			takeBlob = encodeWav(samples, rate);
-			takeUrl = URL.createObjectURL(takeBlob);
-
-			el.preview.src = takeUrl;
-			show(el.saveForm, true);
-			show(el.review, true);
-			text(el.state, clock(samples.length / rate) + ' · ' + bytes(takeBlob.size) + ' · ' + (rate / 1000) + ' kHz');
+			showPreview(take.url, clock(take.seconds) + ' · ' + bytes(take.blob.size) +
+				' · ' + (take.rate / 1000) + ' kHz', true);
 			el.name.focus();
 		}).catch(function (error) {
 			fail(error.message || 'Could not encode the recording.');
@@ -629,9 +674,9 @@
 	}
 
 	/**
-	 * Paused playback. Encodes the audio captured so far into a scratch WAV so
-	 * it can be auditioned mid-take. `chunks` is left untouched — flatten()
-	 * copies — so resuming appends to the same recording.
+	 * Paused playback: audition the take so far, then resume into the same one.
+	 * The encode is async, so Stop or Resume can land mid-flight — check we are
+	 * still paused before showing it, or it would overwrite the finished take.
 	 */
 	function monitor() {
 		if (monitoring || !frames) {
@@ -639,29 +684,17 @@
 		}
 
 		monitoring = true;
-
-		var rate = parseInt(el.rate.value, 10) || 8000;
-		var captured = flatten(chunks, frames);
-		var sourceRate = ctx.sampleRate;
-
 		text(el.state, 'Encoding');
 
-		resample(captured, sourceRate, rate).then(function (samples) {
+		buildWav().then(function (take) {
 			monitoring = false;
 
 			if (!recording || !paused) {
+				URL.revokeObjectURL(take.url);
 				return;
 			}
 
-			var blob = encodeWav(samples, rate);
-
-			releaseMonitor();
-			monitorUrl = URL.createObjectURL(blob);
-
-			el.preview.src = monitorUrl;
-			show(el.saveForm, false);
-			show(el.review, true);
-			text(el.state, clock(samples.length / rate) + ' so far · paused');
+			showPreview(take.url, clock(take.seconds) + ' so far · paused', false);
 		}).catch(function (error) {
 			monitoring = false;
 
@@ -669,23 +702,6 @@
 				fail(error.message || 'Could not build the preview.');
 			}
 		});
-	}
-
-	function releaseMonitor() {
-		if (monitorUrl) {
-			URL.revokeObjectURL(monitorUrl);
-			monitorUrl = null;
-		}
-	}
-
-	function clearMonitor() {
-		if (!el.preview.paused) {
-			el.preview.pause();
-		}
-
-		el.preview.removeAttribute('src');
-		releaseMonitor();
-		show(el.review, false);
 	}
 
 	function togglePause() {
@@ -696,29 +712,22 @@
 		if (paused) {
 			paused = false;
 			startedAt = Date.now();
-			el.pause.querySelector('span').textContent = 'Pause';
-			el.pause.querySelector('i').className = 'fa fa-pause';
-			clearMonitor();
-			startTimer();
+			setButton(el.pause, 'Pause', 'pause');
+			clearPreview();
+			timerLoop.start();
 		} else {
 			paused = true;
 			elapsedBefore += (Date.now() - startedAt) / 1000;
-			el.pause.querySelector('span').textContent = 'Resume';
-			el.pause.querySelector('i').className = 'fa fa-play';
-			stopTimer();
+			setButton(el.pause, 'Resume', 'play');
+			timerLoop.stop();
 			paintTimer();
 			monitor();
 		}
 	}
 
 	function discardTake() {
-		if (takeUrl) {
-			URL.revokeObjectURL(takeUrl);
-		}
-
 		takeBlob = null;
-		takeUrl = null;
-		clearMonitor();
+		clearPreview();
 		show(el.saveForm, true);
 		text(el.saveState, '');
 		resetTimer();
@@ -925,7 +934,7 @@
 
 		// FreePBX can swap a module page in without a full document load, which
 		// re-executes this file. That gives a second copy of the script its own
-		// closure — its own `recording`, `startedAt`, `timerId` — bound to the
+		// closure — its own `recording`, `startedAt`, its own loops — bound to the
 		// same buttons, so one click drives two recorders writing different
 		// times into the same element. A closure-local flag cannot see the
 		// other copy, so the claim is staked on the node itself.
@@ -997,14 +1006,14 @@
 		});
 
 		el.download.addEventListener('click', function () {
-			if (!takeUrl) {
+			if (!takeBlob || !previewUrl) {
 				return;
 			}
 
 			var name = (el.name.value || 'recording').trim() || 'recording';
 			var a = document.createElement('a');
 
-			a.href = takeUrl;
+			a.href = previewUrl;
 			a.download = name + '.wav';
 			document.body.appendChild(a);
 			a.click();
