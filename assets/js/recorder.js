@@ -10,14 +10,16 @@
  * there is no microphone to be had and no flag we can set from here; the page
  * says so rather than failing quietly.
  *
- * This page makes one recording and then leaves. Listing, playing back and
- * deleting what already exists belong to list.js, on the other page.
+ * What becomes of a finished take -- the player, the name, Save, Download --
+ * is not this file's business: it hands the encoded WAV to editor.js and
+ * stops. Text to speech hands over exactly the same way, from the other tab.
  */
 (function (window, document) {
 	'use strict';
 
 	var CFG = (window.OrykMedia && window.OrykMedia.config) || {};
 	var S = window.OrykMedia && window.OrykMedia.shared;
+	var E = window.OrykMedia && window.OrykMedia.editor;
 
 	var MAX_SECONDS = 20 * 60;
 	var TICK_MS = 50;        // timer repaint interval; the clock shows hundredths
@@ -40,16 +42,7 @@
 	var lastClock = '';
 	var opening = false;
 
-	var takeBlob = null;     // encoded WAV of the finished take, null until stop
-	var previewUrl = null;   // object URL behind the player: take or paused monitor
 	var monitoring = false;
-	var leaving = false;     // a save is navigating away; do not warn about it
-
-	// The recording this page is replacing, from ?edit=<name>. Empty on a new
-	// one, and empty too when ?edit= names something that is not there yet --
-	// then the name is only a prefill, and Save is a first write, not a
-	// replacement.
-	var editing = CFG.editing || '';
 
 	/* ------------------------------------------------------------------ */
 	/* Small helpers                                                       */
@@ -594,7 +587,7 @@
 
 		opening = true;
 		clearError();
-		discardTake();
+		E.clearTake();
 
 		openMic().then(function () {
 			opening = false;
@@ -644,45 +637,18 @@
 	 * flatten() copies, so a paused take can be auditioned and then resumed.
 	 */
 	function buildWav() {
-		var rate = parseInt(el.rate.value, 10) || 8000;
+		// The output rate belongs to the editor, not to this panel: text to
+		// speech encodes to the same one, and a take carries the rate it was
+		// actually made at.
+		var rate = E.rate();
 
 		return resample(flatten(chunks, frames), ctx.sampleRate, rate).then(function (samples) {
-			var blob = encodeWav(samples, rate);
-
 			return {
-				blob: blob,
-				url: URL.createObjectURL(blob),
+				blob: encodeWav(samples, rate),
 				seconds: samples.length / rate,
 				rate: rate
 			};
 		});
-	}
-
-	function showPreview(url, label, saveable) {
-		releasePreview();
-		previewUrl = url;
-
-		el.preview.src = url;
-		text(el.state, label);
-		show(el.saveForm, saveable);
-		show(el.review, true);
-	}
-
-	function releasePreview() {
-		if (previewUrl) {
-			URL.revokeObjectURL(previewUrl);
-			previewUrl = null;
-		}
-	}
-
-	function clearPreview() {
-		if (!el.preview.paused) {
-			el.preview.pause();
-		}
-
-		el.preview.removeAttribute('src');
-		releasePreview();
-		show(el.review, false);
 	}
 
 	function stop() {
@@ -705,28 +671,25 @@
 
 		stopDrawing();
 		closeMic();
-		clearPreview();
+		E.clearTake();
 		resetTimer();
-
-		el.state.className = 'oryk-state';
-		text(el.state, 'Encoding');
 
 		if (!frames) {
 			fail('Nothing was captured.');
-			text(el.state, 'Ready');
 			return;
 		}
 
+		E.status('Encoding…');
+
 		buildWav().then(function (take) {
 			chunks = [];
-			takeBlob = take.blob;
 
-			showPreview(take.url, S.clock(take.seconds) + ' · ' + S.bytes(take.blob.size) +
-				' · ' + (take.rate / 1000) + ' kHz', true);
-			el.name.focus();
+			// Done with it: the editor owns the take from here, and this panel
+			// keeps nothing but the microphone.
+			E.setTake(take.blob, take, true);
 		}).catch(function (error) {
+			E.status('');
 			fail(error.message || 'Could not encode the recording.');
-			text(el.state, 'Ready');
 		});
 	}
 
@@ -741,19 +704,21 @@
 		}
 
 		monitoring = true;
-		text(el.state, 'Encoding');
+		E.status('Encoding…');
 
 		buildWav().then(function (take) {
 			monitoring = false;
 
 			if (!recording || !paused) {
-				URL.revokeObjectURL(take.url);
 				return;
 			}
 
-			showPreview(take.url, S.clock(take.seconds) + ' so far · paused', false);
+			// Not saveable: this is the take so far, and it is about to carry
+			// on. The editor plays it and refuses to file it.
+			E.setTake(take.blob, take, false);
 		}).catch(function (error) {
 			monitoring = false;
+			E.status('');
 
 			if (recording && paused) {
 				fail(error.message || 'Could not build the preview.');
@@ -770,7 +735,7 @@
 			paused = false;
 			startedAt = Date.now();
 			setButton(el.pause, 'Pause', 'pause');
-			clearPreview();
+			E.clearTake();
 			timerLoop.start();
 		} else {
 			paused = true;
@@ -780,15 +745,6 @@
 			paintTimer();
 			monitor();
 		}
-	}
-
-	function discardTake() {
-		takeBlob = null;
-		clearPreview();
-		show(el.saveForm, true);
-		text(el.saveState, '');
-		resetTimer();
-		text(el.state, 'Ready');
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -823,81 +779,13 @@
 	}
 
 	/* ------------------------------------------------------------------ */
-	/* Saving                                                              */
-	/* ------------------------------------------------------------------ */
-
-	function saveState(message, kind) {
-		text(el.saveState, message);
-		el.saveState.className = 'oryk-save-state' + (kind ? ' is-' + kind : '');
-	}
-
-	function save(overwrite) {
-		var name = (el.name.value || '').trim();
-
-		if (!takeBlob) {
-			saveState('Record something first.', 'bad');
-			return;
-		}
-
-		if (!S.namePattern.test(name)) {
-			saveState('Name must be letters, numbers, dot, dash or underscore.', 'bad');
-			el.name.focus();
-			return;
-		}
-
-		if (takeBlob.size > CFG.maxBytes) {
-			saveState('Recording is too large to upload.', 'bad');
-			return;
-		}
-
-		// Re-recording that same file is already a confirmed overwrite: it is
-		// what the page was opened to do. Renaming while in edit mode is not —
-		// that would clobber a different recording.
-		var form = S.command('save', {
-			name: name,
-			overwrite: (overwrite || name === editing) ? 'true' : 'false'
-		});
-
-		form.append('audio', takeBlob, name + '.wav');
-
-		el.save.disabled = true;
-		saveState('Saving…');
-
-		S.post(form).then(function (res) {
-			if (res.status) {
-				// Saved: this page is done. The list is where a recording is
-				// played, renamed by re-recording, or deleted.
-				leaving = true;
-				takeBlob = null;
-				saveState(res.message || 'Saved', 'good');
-				S.go(S.listUrl(res.name || name));
-				return;
-			}
-
-			el.save.disabled = false;
-
-			if (res.exists) {
-				el.saveState.className = 'oryk-save-state is-bad';
-				el.saveState.innerHTML = S.escapeHtml(res.message || 'That name is taken.') +
-					' <button type="button" class="btn btn-xs btn-warning" data-oryk-overwrite="1">Overwrite</button>';
-				return;
-			}
-
-			saveState(res.message || 'Could not save.', 'bad');
-		}).catch(function (error) {
-			el.save.disabled = false;
-			saveState(error.message, 'bad');
-		});
-	}
-
-	/* ------------------------------------------------------------------ */
 	/* Wiring                                                              */
 	/* ------------------------------------------------------------------ */
 
 	var booted = false;
 
 	function init() {
-		if (booted || !S) {
+		if (booted || !S || !E) {
 			return;
 		}
 
@@ -920,38 +808,16 @@
 			insecure: $('orykMediaInsecure'),
 			error: $('orykMediaError'),
 			device: $('orykMediaDevice'),
-			rate: $('orykMediaRate'),
 			record: $('orykMediaRecord'),
 			pause: $('orykMediaPause'),
 			timer: $('orykMediaTimer'),
-			state: $('orykMediaState'),
 			meter: $('orykMediaMeterFill'),
-			scope: $('orykMediaScope'),
-			review: $('orykMediaReview'),
-			saveForm: $('orykMediaSaveForm'),
-			preview: $('orykMediaPreview'),
-			name: $('orykMediaName'),
-			save: $('orykMediaSave'),
-			download: $('orykMediaDownload'),
-			discard: $('orykMediaDiscard'),
-			saveState: $('orykMediaSaveState')
+			scope: $('orykMediaScope')
 		};
 
-		// The action bar is drawn by FreePBX, outside this module's markup, so
-		// Save has to be told what it means here. Close is the only way back
-		// that does not go through a save.
-		S.onAction('oryksave', function () {
-			var active = document.querySelector('.oryk-method-panels > .tab-pane.active');
-			var panel = active && window.OrykMedia.panels[active.id];
-
-			if (panel && panel.submit) {
-				panel.submit();
-			}
-		});
-
-		S.onAction('orykclose', function () {
-			S.go(S.listUrl());
-		});
+		// Discarding the current take is the editor's button, but the clock
+		// belongs to this panel, so it is reset from here.
+		E.onDiscard(resetTimer);
 
 		var supported = window.isSecureContext !== false &&
 			navigator.mediaDevices &&
@@ -983,25 +849,6 @@
 		});
 
 		el.pause.addEventListener('click', togglePause);
-		el.discard.addEventListener('click', discardTake);
-		el.save.addEventListener('click', function () {
-			save(false);
-		});
-
-		el.download.addEventListener('click', function () {
-			if (!takeBlob || !previewUrl) {
-				return;
-			}
-
-			var name = (el.name.value || 'recording').trim() || 'recording';
-			var a = document.createElement('a');
-
-			a.href = previewUrl;
-			a.download = name + '.wav';
-			document.body.appendChild(a);
-			a.click();
-			document.body.removeChild(a);
-		});
 
 		// Switching input device mid-session means reopening the mic.
 		el.device.addEventListener('change', function () {
@@ -1014,49 +861,30 @@
 			armScope();       // follow the selection instead of holding the old mic
 		});
 
-		el.saveState.addEventListener('click', function (event) {
-			if (event.target.getAttribute('data-oryk-overwrite')) {
-				save(true);
-			}
-		});
-
-		window.addEventListener('beforeunload', function (event) {
-			if (leaving || !(recording || takeBlob)) {
-				return;
-			}
-
-			event.preventDefault();
-			event.returnValue = '';
-		});
 	}
 
 	/* ------------------------------------------------------------------ */
-	/* Shared with tts.js                                                  */
+	/* What the rest of the editor needs from this panel                   */
 	/* ------------------------------------------------------------------ */
 
 	/*
-	 * Text to Speech is a different way of making the same file, so the two
-	 * panels are interchangeable to the action bar: each registers what its
-	 * Save means, and the toolbar asks whichever tab is open.
-	 *
 	 * redraw() is for the tab switch: the scope canvas sizes itself from its
 	 * box, and a box inside a hidden panel has no width.
+	 *
+	 * isRecording() is for the unload warning: a take still being recorded is
+	 * worth warning about even though nothing has been encoded yet.
 	 */
 	window.OrykMedia = window.OrykMedia || {};
-	window.OrykMedia.panels = window.OrykMedia.panels || {};
-	window.OrykMedia.panels.orykMediaMic = {
-		submit: function () {
-			save(false);
-		}
-	};
-
-	if (S) {
-		S.redraw = function () {
+	window.OrykMedia.recorder = {
+		isRecording: function () {
+			return recording;
+		},
+		redraw: function () {
 			if (el.scope) {
 				drawIdle();
 			}
-		};
-	}
+		}
+	};
 
 	if (document.readyState === 'loading') {
 		document.addEventListener('DOMContentLoaded', init);

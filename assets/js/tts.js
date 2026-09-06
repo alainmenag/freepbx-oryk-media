@@ -1,14 +1,16 @@
 /*
- * tts.js -- the Text to Speech half of the Create Media section.
+ * tts.js -- the Text to Speech source, one of the two ways this page makes a
+ * recording.
  *
  * This file is deliberately thin. Synthesis happens on the server: the browser
- * sends text, a voice *key* and a sample rate, and gets back a saved recording.
- * It never sees a model path, a binary path or a command line, and there is
- * nothing here that could supply one.
+ * sends text, a voice *key* and the editor's output sample rate, and gets the
+ * generated WAV back as bytes. It never sees a model path, a binary path or a
+ * command line, and there is nothing here that could supply one.
  *
- * Everything that is not synthesis -- the transport, the name rule, the play
- * endpoint, where the two pages are -- comes from shared.js rather than being
- * reimplemented here.
+ * Nothing is written to the sounds directory by generating. What comes back is
+ * a temporary WAV, handed to editor.js exactly as a microphone take is -- same
+ * player, same name field, same Save. This panel owns the text and the voice,
+ * and nothing else.
  */
 (function (window, document) {
 	'use strict';
@@ -16,79 +18,20 @@
 	var CFG = (window.OrykMedia && window.OrykMedia.config) || {};
 	var TTS = CFG.tts || {};
 
+	var S = window.OrykMedia && window.OrykMedia.shared;
+	var E = window.OrykMedia && window.OrykMedia.editor;
+
 	var el = {};
-	var shared = null;
 	var generating = false;
-	var saved = '';    // name of the last file written, for the Done button
 
 	function $(id) {
 		return document.getElementById(id);
-	}
-
-	function show(node, on) {
-		if (node) {
-			node.classList.toggle('hidden', !on);
-		}
 	}
 
 	function text(node, value) {
 		if (node) {
 			node.textContent = value;
 		}
-	}
-
-	function state(message, kind) {
-		if (!el.state) {
-			return;
-		}
-
-		text(el.state, message);
-		el.state.className = 'oryk-save-state' + (kind ? ' is-' + kind : '');
-	}
-
-	/* ------------------------------------------------------------------ */
-	/* Tabs                                                                */
-	/* ------------------------------------------------------------------ */
-
-	/**
-	 * Bootstrap's tab plugin would do this, but relying on it means relying on
-	 * whichever bootstrap.js the surrounding FreePBX page happened to load.
-	 * Two class toggles are cheaper than that dependency.
-	 */
-	function wireTabs() {
-		var tabs = document.querySelectorAll('.oryk-methods [data-oryk-tab]');
-
-		if (!tabs.length) {
-			return;
-		}
-
-		Array.prototype.forEach.call(tabs, function (link) {
-			link.addEventListener('click', function (event) {
-				event.preventDefault();
-
-				var target = link.getAttribute('data-oryk-tab');
-
-				Array.prototype.forEach.call(tabs, function (other) {
-					other.parentNode.classList.toggle(
-						'active',
-						other.getAttribute('data-oryk-tab') === target
-					);
-				});
-
-				Array.prototype.forEach.call(
-					document.querySelectorAll('.oryk-method-panels .tab-pane'),
-					function (pane) {
-						pane.classList.toggle('active', pane.id === target);
-					}
-				);
-
-				// The scope canvas has just been given a width for the first
-				// time, or has just lost the one it was drawn at.
-				if (shared && shared.redraw) {
-					shared.redraw();
-				}
-			});
-		});
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -106,87 +49,59 @@
 	}
 
 	/**
-	 * Play what was just written. The file is served by the same endpoint the
-	 * saved list uses; the timestamp is only there to defeat the browser cache
-	 * when the same name is regenerated.
+	 * Ask the server to speak the text, and load what comes back.
+	 *
+	 * No name is involved: the file this becomes is decided at Save, by the
+	 * editor, and may never be saved at all. A failure comes back as JSON
+	 * where the audio would have been; postBinary() tells the two apart.
 	 */
-	function preview(name, meta) {
-		el.preview.src = shared.playUrl(name, true);
-		text(el.meta, meta);
-		show(el.review, true);
-	}
-
-	function generate(overwrite) {
+	function generate() {
 		if (generating) {
 			return;
 		}
 
 		var body = (el.text.value || '').trim();
-		var name = (el.name.value || '').trim();
 
 		if (!body) {
-			state('Enter some text to speak.', 'bad');
+			E.status('Enter some text to speak.', 'bad');
 			el.text.focus();
 			return;
 		}
 
-		if (!shared.namePattern.test(name)) {
-			state('Name must be letters, numbers, dot, dash or underscore.', 'bad');
-			el.name.focus();
-			return;
-		}
-
-		var form = shared.command('generateTts', {
-			name: name,
+		var form = S.command('generateTts', {
 			text: body,
 			voice: el.voice.value,
-			rate: el.rate.value,
-			// Regenerating the file this page was opened on is already a
-			// confirmed replacement; any other name still has to be confirmed.
-			overwrite: (overwrite || name === (CFG.editing || '')) ? 'true' : 'false'
+			rate: E.rate()
 		});
 
 		generating = true;
 		el.generate.disabled = true;
-		show(el.review, false);
-		state('Generating… this can take a moment for long text.');
 
-		shared.post(form).then(function (res) {
+		// The previous take goes now rather than when the new one lands: it is
+		// no longer what the page is about, and a long generate would leave it
+		// sitting there looking current.
+		E.clearTake();
+		E.status('Generating… this can take a moment for long text.');
+
+		S.postBinary(form).then(function (res) {
 			generating = false;
 			el.generate.disabled = false;
 
-			if (res.status) {
-				// Unlike a take from the microphone, this was never auditioned
-				// before it was written -- so play it here rather than
-				// bouncing straight back to the list. Done is a click away.
-				state(res.message || 'Saved', 'good');
-				shared.toast(res.message || 'Saved', 'success');
-				saved = res.name || name;
-				preview(saved, [
-					'custom/' + saved,
-					(res.seconds || 0) + ' s',
-					shared.bytes(res.bytes || 0),
-					((res.rate || 8000) / 1000) + ' kHz'
-				].join(' · '));
-				show(el.done, true);
+			if (res.json) {
+				E.status(res.json.message || 'Could not generate that.', 'bad');
 				return;
 			}
 
-			if (res.exists) {
-				// Same handshake as the recorder: an existing recording is only
-				// replaced when someone says so a second time.
-				el.state.className = 'oryk-save-state is-bad';
-				el.state.innerHTML = shared.escapeHtml(res.message || 'That name is taken.') +
-					' <button type="button" class="btn btn-xs btn-warning" data-oryk-tts-overwrite="1">' +
-					'Replace it</button>';
-				return;
-			}
+			E.setTake(res.blob, {
+				seconds: res.header('X-Oryk-Seconds'),
+				rate: res.header('X-Oryk-Rate')
+			}, true);
 
-			state(res.message || 'Could not generate that.', 'bad');
+			E.status('Generated. Listen to it, then Save or Download.', 'good');
 		}).catch(function (error) {
 			generating = false;
 			el.generate.disabled = false;
-			state(error.message || 'Could not reach the server.', 'bad');
+			E.status(error.message || 'Could not reach the server.', 'bad');
 		});
 	}
 
@@ -195,13 +110,7 @@
 	/* ------------------------------------------------------------------ */
 
 	function init() {
-		// Tabs exist whether or not Piper does -- the panel still has to be
-		// reachable to show why it is empty.
-		wireTabs();
-
-		shared = window.OrykMedia && window.OrykMedia.shared;
-
-		if (!shared || !TTS.available) {
+		if (!S || !E || !TTS.available) {
 			return;
 		}
 
@@ -209,20 +118,12 @@
 			text: $('orykTtsText'),
 			count: $('orykTtsCount'),
 			voice: $('orykTtsVoice'),
-			rate: $('orykTtsRate'),
-			name: $('orykTtsName'),
-			generate: $('orykTtsGenerate'),
-			state: $('orykTtsState'),
-			review: $('orykTtsReview'),
-			preview: $('orykTtsPreview'),
-			meta: $('orykTtsMeta'),
-			error: $('orykTtsError'),
-			done: $('orykTtsDone')
+			generate: $('orykTtsGenerate')
 		};
 
-		// Same guard as recorder.js: FreePBX can swap a module page in without
-		// a document load, which runs this file a second time against the same
-		// buttons. The claim is staked on the node, where both copies see it.
+		// Same guard as the other panels: FreePBX can swap a module page in
+		// without a document load, which runs this file a second time against
+		// the same buttons. The claim is staked on the node.
 		if (!el.generate || el.generate.getAttribute('data-oryk-bound') === '1') {
 			return;
 		}
@@ -232,45 +133,8 @@
 		countCharacters();
 
 		el.text.addEventListener('input', countCharacters);
-
-		el.generate.addEventListener('click', function () {
-			generate(false);
-		});
-
-		el.state.addEventListener('click', function (event) {
-			if (event.target.getAttribute('data-oryk-tts-overwrite')) {
-				generate(true);
-			}
-		});
-
-		// Regenerating under a name that was just written should not leave the
-		// previous take playing underneath the new one.
-		el.name.addEventListener('input', function () {
-			if (!el.preview.paused) {
-				el.preview.pause();
-			}
-		});
-
-		el.done.addEventListener('click', function () {
-			shared.go(shared.listUrl(saved));
-		});
+		el.generate.addEventListener('click', generate);
 	}
-
-	/*
-	 * What Save means while this tab is open. The action bar asks whichever
-	 * panel is showing; see recorder.js.
-	 */
-	window.OrykMedia = window.OrykMedia || {};
-	window.OrykMedia.panels = window.OrykMedia.panels || {};
-	window.OrykMedia.panels.orykMediaTts = {
-		submit: function () {
-			// Unavailable Piper means init() bailed and there is nothing to
-			// drive; the panel already says why.
-			if (el.generate) {
-				generate(false);
-			}
-		}
-	};
 
 	if (document.readyState === 'loading') {
 		document.addEventListener('DOMContentLoaded', init);
