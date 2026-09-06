@@ -901,6 +901,15 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	 *
 	 * The voice models are the opposite case: data, read by Piper, never
 	 * executed, and large. 0644 under a 0755 directory is exactly right.
+	 *
+	 * install/fetch-piper.sh has to be named too. The module never executes
+	 * it -- it runs as `/bin/sh <script>` -- but the admin diagnostics tell a
+	 * human to run `./install/fetch-piper.sh`, and it is tracked 0755 in git.
+	 * Without this entry the rdir walk strips the bit on every install and
+	 * reload, and the checkout on the box goes dirty with a mode-only diff.
+	 *
+	 * Order matters and is on our side: core adds the module directory as
+	 * rdir first, then merges whatever this returns, so these win.
 	 */
 	public function chownFreepbx()
 	{
@@ -908,6 +917,7 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 
 		$piper = __DIR__ . '/bin/piper';
 		$voices = __DIR__ . '/voices';
+		$fetch = __DIR__ . '/install/fetch-piper.sh';
 
 		if (is_dir($piper)) {
 			$files[] = ['type' => 'execdir', 'path' => $piper, 'perms' => 0755];
@@ -915,6 +925,10 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 
 		if (is_dir($voices)) {
 			$files[] = ['type' => 'rdir', 'path' => $voices, 'perms' => 0755];
+		}
+
+		if (is_file($fetch)) {
+			$files[] = ['type' => 'file', 'path' => $fetch, 'perms' => 0755];
 		}
 
 		return $files;
