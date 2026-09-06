@@ -47,7 +47,7 @@ The runtime (~52 MB) and the voice models (~63 MB each) are not kept in git.
 fwconsole ma install oryk_media
 ```
 
-That downloads rhasspy/piper `2023.11.14-2` into `vendor/piper/` and
+That downloads rhasspy/piper `2023.11.14-2` into `bin/piper/` and
 `en_US-lessac-medium` into `voices/`, verifies the executable's checksum, and
 sets ownership, printing progress as it goes. Everything resolves relative to
 the module directory — there is no `/opt/tts` and no path compiled into the
@@ -73,9 +73,14 @@ The Text to Speech tab reports what it found. When something is missing an
 administrator sees exactly which check failed and where it looked; everyone
 else just sees that the feature is unavailable.
 
-Piper's libraries have to sit in the same directory as the executable — its
-`RUNPATH` is `$ORIGIN` — so keep the upstream layout rather than tidying it
-into `bin/` and `lib/`.
+Two things about that directory are load-bearing. Piper's libraries have to
+sit *beside* the executable — its `RUNPATH` is `$ORIGIN` — so keep the upstream
+layout rather than splitting it into `bin/` and `lib/`. And it has to be under
+`bin/`: `fwconsole chown` walks a module as type `rdir`, which recursively
+strips the execute bit, and it runs after every install and reload. Core
+exempts exactly three directories per module — `bin/`, `hooks/`, `agi-bin/` —
+so `bin/piper/` is the one place an executable survives. `chownFreepbx()` in
+the module class says the same thing explicitly.
 
 ## Adding another voice
 
@@ -117,7 +122,7 @@ assets/
   css/media.css          page-scoped styles
 install/
   fetch-piper.sh         installs the runtime and voices
-vendor/piper/            Piper executable, its libraries, espeak-ng-data  (not in git)
+bin/piper/               Piper executable, its libraries, espeak-ng-data  (not in git)
 voices/                  *.onnx and *.onnx.json                          (not in git)
 LICENSES/                licences and provenance for everything bundled
 ```
@@ -141,3 +146,11 @@ same as the recorder.
 
 `.vscode/sftp.json` points at `/var/www/html/admin/modules/oryk_media`. After
 uploading, `fwconsole ma reload && fwconsole reload`.
+
+`bin/piper/` and the `.onnx` models are in that config's `ignore` list, and
+should stay there. They are installed **on the server** and are not the local
+copy's business: SFTP does not carry file modes, so uploading them replaces a
+working executable with a non-executable one — and it re-uploads 115 MB every
+time the watcher fires. If Text to Speech stops working right after a deploy,
+that is the first thing to check, and `fwconsole chown --module oryk_media`
+is the repair.

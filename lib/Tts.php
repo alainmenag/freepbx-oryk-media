@@ -78,9 +78,23 @@ class Tts
 	/* Where the runtime lives                                             */
 	/* ------------------------------------------------------------------ */
 
+	/**
+	 * Where the Piper runtime lives.
+	 *
+	 * bin/ rather than vendor/, and not for tidiness: `fwconsole chown` applies
+	 * type 'rdir' to a module's directory, which recursively strips the execute
+	 * bit off every file in it -- and it runs at the end of every module
+	 * install and reload. It then makes an exception for three "known binary
+	 * directories" per module, bin/, hooks/ and agi-bin/, which it sets
+	 * 'execdir' instead.
+	 *
+	 * So an executable anywhere else under the module is not merely at risk of
+	 * losing its exec bit; it is guaranteed to lose it, on a schedule. Under
+	 * bin/ it is guaranteed to keep it, with no cooperation needed from us.
+	 */
 	public function piperDir()
 	{
-		return $this->moduleDir . '/vendor/piper';
+		return $this->moduleDir . '/bin/piper';
 	}
 
 	public function piperBinary()
@@ -260,12 +274,17 @@ class Tts
 		$sox = $this->soxBinary();
 		$voices = $this->availableVoices();
 
+		$this->repairExecuteBit();
+
 		$checks = [
 			[
 				'label' => 'Piper executable',
 				'ok' => is_file($binary) && is_executable($binary),
 				'detail' => is_file($binary)
-					? (is_executable($binary) ? $binary : $binary . ' is not executable (chmod 755)')
+					? (is_executable($binary)
+						? $binary
+						: $binary . ' is present but not executable, and this process cannot'
+							. ' change that. Run: fwconsole chown --module oryk_media')
 					: $binary . ' is missing',
 			],
 			[
@@ -311,6 +330,32 @@ class Tts
 			'defaultRate' => self::DEFAULT_RATE,
 			'maxChars' => self::MAX_TEXT_CHARS,
 		];
+	}
+
+	/**
+	 * Put the execute bit back if it has gone missing and we own the file.
+	 *
+	 * Something upstream of us strips it more often than you would like: an
+	 * SFTP deploy that does not carry modes, a tarball unpacked with a umask,
+	 * a `fwconsole chown` from before the runtime moved under bin/. When PHP
+	 * owns the file this fixes it for good and nobody has to be told; when it
+	 * does not, the check below says which command will.
+	 *
+	 * Only ever adds 0755 to a file that is already there. It cannot create
+	 * one, and it cannot reach anything outside the module directory.
+	 */
+	private function repairExecuteBit()
+	{
+		$binary = $this->piperBinary();
+
+		if (!is_file($binary) || is_executable($binary)) {
+			return;
+		}
+
+		if (@chmod($binary, 0755)) {
+			clearstatcache(true, $binary);
+			$this->log('restored the execute bit on ' . $binary);
+		}
 	}
 
 	/**

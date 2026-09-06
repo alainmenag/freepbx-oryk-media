@@ -728,6 +728,39 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	{
 	}
 
+	/**
+	 * What `fwconsole chown` should do with our files.
+	 *
+	 * It walks a module's directory as type 'rdir', which recursively strips
+	 * the execute bit -- and it runs at the end of every install and reload.
+	 * Core makes an exception for bin/, hooks/ and agi-bin/, which is why the
+	 * Piper runtime lives in bin/piper and is safe without this method at all.
+	 *
+	 * This says so out loud anyway. It costs nothing, it documents the
+	 * requirement where someone moving the directory would see it, and it does
+	 * not depend on that core convention staying as it is.
+	 *
+	 * The voice models are the opposite case: data, read by Piper, never
+	 * executed, and large. 0644 under a 0755 directory is exactly right.
+	 */
+	public function chownFreepbx()
+	{
+		$files = [];
+
+		$piper = __DIR__ . '/bin/piper';
+		$voices = __DIR__ . '/voices';
+
+		if (is_dir($piper)) {
+			$files[] = ['type' => 'execdir', 'path' => $piper, 'perms' => 0755];
+		}
+
+		if (is_dir($voices)) {
+			$files[] = ['type' => 'rdir', 'path' => $voices, 'perms' => 0755];
+		}
+
+		return $files;
+	}
+
 	public function backup()
 	{
 	}

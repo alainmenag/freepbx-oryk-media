@@ -42,7 +42,7 @@ VOICES_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 LIBS="libespeak-ng.so.1 libpiper_phonemize.so.1 libonnxruntime.so.1.14.1"
 
 MODULE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-VENDOR="${MODULE_DIR}/vendor/piper"
+PIPER_DIR="${MODULE_DIR}/bin/piper"
 VOICE_DIR="${MODULE_DIR}/voices"
 
 WANT_RUNTIME=1
@@ -78,11 +78,11 @@ done
 # ---------------------------------------------------------------------------
 
 runtime_installed() {
-	[ -x "${VENDOR}/piper" ] || return 1
-	[ -d "${VENDOR}/espeak-ng-data" ] || return 1
+	[ -x "${PIPER_DIR}/piper" ] || return 1
+	[ -d "${PIPER_DIR}/espeak-ng-data" ] || return 1
 
 	for lib in $LIBS; do
-		[ -e "${VENDOR}/${lib}" ] || return 1
+		[ -e "${PIPER_DIR}/${lib}" ] || return 1
 	done
 
 	return 0
@@ -155,14 +155,19 @@ if [ "$WANT_RUNTIME" -eq 1 ]; then
 
 	[ "$GOT" = "$PIPER_SHA256" ] || die "checksum mismatch on the piper executable: got ${GOT}"
 
-	# Keep the upstream layout. Piper's RUNPATH is $ORIGIN, so its libraries
-	# have to stay in the same directory as the executable -- do not tidy this
-	# into bin/ and lib/.
-	mkdir -p "$VENDOR"
-	cp -a "${TMP}"/x/piper/. "${VENDOR}/"
-	chmod 755 "${VENDOR}/piper"
+	# Keep the upstream layout: Piper's RUNPATH is $ORIGIN, so its libraries
+	# have to stay in the same directory as the executable. Do not split them
+	# into separate bin/ and lib/ subdirectories.
+	#
+	# The parent being bin/ is also deliberate. `fwconsole chown` strips the
+	# execute bit off everything under a module except bin/, hooks/ and
+	# agi-bin/, and it runs after every install and reload -- so this is the
+	# one place the executable stays executable.
+	mkdir -p "$PIPER_DIR"
+	cp -a "${TMP}"/x/piper/. "${PIPER_DIR}/"
+	chmod 755 "${PIPER_DIR}/piper"
 
-	say "Installed the runtime in ${VENDOR}"
+	say "Installed the runtime in ${PIPER_DIR}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -208,7 +213,7 @@ fi
 # ---------------------------------------------------------------------------
 
 if id asterisk >/dev/null 2>&1; then
-	chown -R asterisk:asterisk "$VENDOR" "$VOICE_DIR" 2>/dev/null || true
+	chown -R asterisk:asterisk "$PIPER_DIR" "$VOICE_DIR" 2>/dev/null || true
 fi
 
 if ! command -v sox >/dev/null 2>&1; then

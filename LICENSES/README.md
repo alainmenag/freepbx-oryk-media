@@ -1,7 +1,7 @@
 # Third-party components
 
 Everything the Text to Speech feature runs is third-party and is installed
-under `vendor/piper/` and `voices/` by `install/fetch-piper.sh`. This file
+under `bin/piper/` and `voices/` by `install/fetch-piper.sh`. This file
 records exactly what, from where, and under what terms. The module itself is
 AGPLv3 (see `module.xml`).
 
@@ -41,7 +41,7 @@ reproduced here.
 **Read this part before shipping the runtime to anyone.** "The old Piper is
 MIT" is true of Piper itself and not of everything in the tarball: eSpeak NG is
 GPL-3.0-or-later, and Piper loads it at runtime for phonemisation. Distributing
-`vendor/piper/` therefore means distributing GPL-3.0 binaries, which carries the
+`bin/piper/` therefore means distributing GPL-3.0 binaries, which carries the
 usual obligation to offer the corresponding source of eSpeak NG to whoever
 receives them. The module being AGPLv3 makes that compatible rather than
 awkward, but it is an obligation either way, and it does not go away because
