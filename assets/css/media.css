@@ -114,10 +114,6 @@
 	color: #c9302c;
 }
 
-.oryk-media .oryk-list td {
-	vertical-align: middle;
-}
-
 .oryk-media .oryk-row-actions audio {
 	height: 32px;
 	vertical-align: middle;
@@ -163,10 +159,6 @@
 /* ---------------------------------------------------------------------- */
 /* The list page                                                          */
 /* ---------------------------------------------------------------------- */
-
-.oryk-media .oryk-lede {
-	margin-bottom: 16px;
-}
 
 .oryk-media .oryk-inline-help {
 	display: inline;

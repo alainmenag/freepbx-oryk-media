@@ -34,36 +34,29 @@ $h = function ($v) {
 			</div>
 		<?php endif; ?>
 
-		<div class="display full-border">
+		<div class="bootstrap-table bootstrap4">
 
-			<div class="section-title">
+			<div class="fixed-table-toolbar">
 				<h2><span class="title">Media</span></h2>
 			</div>
 
-			<div class="section">
-
-				<p class="help-block fpbx-help-block oryk-lede">
-					Audio in <code><?php echo $h($customDir); ?></code>, offered to System
-					Recordings as <code>custom/&lt;name&gt;</code>. Edit re-records or
-					regenerates one in place, under the same name, so anything already
-					pointing at it keeps working.
-				</p>
-
-				<table class="table table-striped oryk-list">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Formats</th>
-							<th>Size</th>
-							<th>Modified</th>
-							<th class="text-right">&nbsp;</th>
-						</tr>
-					</thead>
-					<tbody id="orykMediaList">
-						<tr><td colspan="5" class="text-muted">Loading…</td></tr>
-					</tbody>
-				</table>
-
+			<div class="fixed-table-container">
+				<div class="fixed-table-body">
+					<table class="table table-striped table-bordered table-hover">
+						<thead>
+							<tr>
+								<th><div class="th-inner">Name</div></th>
+								<th><div class="th-inner">Formats</div></th>
+								<th><div class="th-inner">Size</div></th>
+								<th><div class="th-inner">Modified</div></th>
+								<th><div class="th-inner">&nbsp;</div></th>
+							</tr>
+						</thead>
+						<tbody id="orykMediaList">
+							<tr><td colspan="5" class="text-muted">Loading…</td></tr>
+						</tbody>
+					</table>
+				</div>
 			</div>
 
 		</div>
