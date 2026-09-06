@@ -153,3 +153,79 @@
 .oryk-media .oryk-editing .btn {
 	margin-left: 8px;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Create Media: the two methods                                          */
+/* ---------------------------------------------------------------------- */
+
+.oryk-media .oryk-methods {
+	margin-bottom: 18px;
+}
+
+.oryk-media .oryk-methods > li > a {
+	color: #555;
+}
+
+.oryk-media .oryk-methods > li > a i {
+	margin-right: 6px;
+}
+
+.oryk-media .oryk-methods > li.active > a {
+	font-weight: 600;
+}
+
+/* Bootstrap's own .tab-pane rules only apply when its JS is driving the
+   tabs; tts.js toggles .active itself, so say what that means here. */
+.oryk-media .oryk-method-panels > .tab-pane {
+	display: none;
+}
+
+.oryk-media .oryk-method-panels > .tab-pane.active {
+	display: block;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Text to Speech                                                         */
+/* ---------------------------------------------------------------------- */
+
+.oryk-media .oryk-tts-text {
+	resize: vertical;
+	min-height: 110px;
+	line-height: 1.5;
+}
+
+.oryk-media #orykTtsCount.is-bad {
+	color: #c9302c;
+	font-weight: 600;
+}
+
+.oryk-media .oryk-tts-checks {
+	max-width: 760px;
+	margin-top: 6px;
+}
+
+.oryk-media .oryk-tts-checks td {
+	border-top: none;
+	border-bottom: 1px solid #eef0f2;
+	vertical-align: middle;
+	font-size: 13px;
+}
+
+.oryk-media .oryk-tts-checks .oryk-check-icon {
+	width: 24px;
+}
+
+.oryk-media .oryk-tts-checks .oryk-check-ok .oryk-check-icon {
+	color: #35b37e;
+}
+
+.oryk-media .oryk-tts-checks .oryk-check-bad .oryk-check-icon {
+	color: #c9302c;
+}
+
+.oryk-media .oryk-tts-checks code {
+	background: none;
+	color: #777;
+	padding: 0;
+	word-break: break-all;
+}

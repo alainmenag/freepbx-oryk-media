@@ -1243,6 +1243,37 @@
 		});
 	}
 
+	/* ------------------------------------------------------------------ */
+	/* Shared with tts.js                                                  */
+	/* ------------------------------------------------------------------ */
+
+	/*
+	 * Text to Speech is a different way of making a file, not a different kind
+	 * of file: once saved it lands in the same list, plays through the same
+	 * endpoint and is deleted by the same button. So it borrows the transport,
+	 * the renderer and the name rule from here rather than growing its own
+	 * copies of each, which would then drift.
+	 *
+	 * redraw() is for the tab switch: the scope canvas sizes itself from its
+	 * box, and a box inside a hidden panel has no width.
+	 */
+	window.OrykMedia = window.OrykMedia || {};
+	window.OrykMedia.shared = {
+		ajaxUrl: AJAX,
+		module: MODULE,
+		namePattern: NAME_RE,
+		post: post,
+		render: render,
+		toast: toast,
+		bytes: bytes,
+		escapeHtml: escapeHtml,
+		redraw: function () {
+			if (el.scope) {
+				drawIdle();
+			}
+		}
+	};
+
 	if (document.readyState === 'loading') {
 		document.addEventListener('DOMContentLoaded', init);
 	} else {
