@@ -8,13 +8,21 @@ use PDO;
 use FreePBX_Helpers;
 
 /**
- * Media -- record audio in the browser and drop it where FreePBX looks for
+ * Media -- create audio in the browser and drop it where FreePBX looks for
  * custom sounds, so it can be picked up by System Recordings.
  *
- * The browser does all the encoding: recorder.js captures from the mic,
- * resamples with an OfflineAudioContext and writes a 16-bit mono PCM WAV. That
- * is a format Asterisk plays natively, so nothing here shells out to sox or
- * ffmpeg and the module has no runtime dependency beyond PHP.
+ * There are two ways in. The microphone recorder does all its encoding in the
+ * browser: recorder.js captures from the mic, resamples with an
+ * OfflineAudioContext and writes a 16-bit mono PCM WAV. That is a format
+ * Asterisk plays natively, so that path shells out to nothing and has no
+ * runtime dependency beyond PHP.
+ *
+ * Text to Speech runs Piper locally -- see lib/Tts.php. It is optional: if the
+ * bundled runtime or sox is missing, the module says so and the recorder
+ * carries on working. Nothing is sent off the machine either way.
+ *
+ * Both paths end in the same place, as the same kind of file, listed and
+ * deleted by the same code.
  */
 class Oryk_media extends FreePBX_Helpers implements \BMO
 {
@@ -43,6 +51,9 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	/** @var array|null|false Cached result of getUser() for this request. */
 	private $userCache = false;
 
+	/** @var \FreePBX\modules\OrykMedia\Tts|null Built on first use. */
+	private $ttsHelper = null;
+
 	public function __construct($freepbx = null)
 	{
 		if ($freepbx == null) {
@@ -65,6 +76,7 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 					'writable' => $this->isCustomDirWritable(),
 					'maxBytes' => self::MAX_UPLOAD_BYTES,
 					'recordings' => $this->listRecordings(),
+					'tts' => $this->ttsStatus(),
 					'assetUrl' => [$this, 'assetUrl'],
 				]);
 			default:
@@ -347,6 +359,70 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	/* ------------------------------------------------------------------ */
 
 	/**
+	 * Put a WAV that already exists somewhere on disk into the custom sounds
+	 * directory as <name>.wav.
+	 *
+	 * The last few steps of saving are identical whether the bytes arrived as
+	 * a browser upload or came out of Piper a moment ago -- same name rules,
+	 * same overwrite handshake, same ownership -- so both callers land here.
+	 * The one thing that must differ is how the file is moved:
+	 * move_uploaded_file() is what makes an upload safe, and it refuses
+	 * anything that was not one.
+	 *
+	 * @param string $name      Bare name, no extension.
+	 * @param string $source    Path to the WAV to store.
+	 * @param bool   $overwrite Replace an existing recording of the same name.
+	 * @param bool   $isUpload  True when $source is a $_FILES tmp_name.
+	 */
+	private function storeWav($name, $source, $overwrite, $isUpload)
+	{
+		if (!$overwrite && $this->recordingExists($name)) {
+			return ['status' => false, 'exists' => true, 'message' => 'A recording called "' . $name . '" already exists.'];
+		}
+
+		if (!$this->ensureCustomDir()) {
+			return ['status' => false, 'message' => 'Could not create ' . $this->getCustomDir() . '.'];
+		}
+
+		$dest = $this->getCustomDir() . '/' . $name . '.' . self::PRIMARY_EXTENSION;
+
+		if ($isUpload) {
+			$moved = @move_uploaded_file($source, $dest);
+		} else {
+			// /tmp is often its own filesystem, where rename() cannot reach
+			// across; fall back to a copy in that case.
+			$moved = @rename($source, $dest);
+
+			if (!$moved && @copy($source, $dest)) {
+				@unlink($source);
+				$moved = true;
+			}
+		}
+
+		if (!$moved) {
+			return ['status' => false, 'message' => 'Could not write ' . $dest . '. Check permissions.'];
+		}
+
+		@chmod($dest, 0644);
+
+		// Only meaningful when the web process runs as root; on a stock FreePBX
+		// PHP is already asterisk and these are no-ops.
+		@chown($dest, 'asterisk');
+		@chgrp($dest, 'asterisk');
+
+		clearstatcache(true, $dest);
+
+		return [
+			'status' => true,
+			'name' => $name,
+			'path' => $dest,
+			'bytes' => (int) @filesize($dest),
+			'modified' => (int) @filemtime($dest),
+			'message' => 'Saved ' . basename($dest),
+		];
+	}
+
+	/**
 	 * Store an uploaded WAV as <name>.wav in the custom sounds directory.
 	 *
 	 * @param string $name      Bare name, no extension.
@@ -390,34 +466,7 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 			return ['status' => false, 'message' => 'That is not a WAV file.'];
 		}
 
-		if (!$overwrite && $this->recordingExists($name)) {
-			return ['status' => false, 'exists' => true, 'message' => 'A recording called "' . $name . '" already exists.'];
-		}
-
-		if (!$this->ensureCustomDir()) {
-			return ['status' => false, 'message' => 'Could not create ' . $this->getCustomDir() . '.'];
-		}
-
-		$dest = $this->getCustomDir() . '/' . $name . '.' . self::PRIMARY_EXTENSION;
-
-		if (!@move_uploaded_file($file['tmp_name'], $dest)) {
-			return ['status' => false, 'message' => 'Could not write ' . $dest . '. Check permissions.'];
-		}
-
-		@chmod($dest, 0644);
-
-		// Only meaningful when the web server runs as root; on a stock FreePBX
-		// PHP is already asterisk and these are no-ops.
-		@chown($dest, 'asterisk');
-		@chgrp($dest, 'asterisk');
-
-		return [
-			'status' => true,
-			'name' => $name,
-			'path' => $dest,
-			'bytes' => (int) @filesize($dest),
-			'message' => 'Saved ' . basename($dest),
-		];
+		return $this->storeWav($name, $file['tmp_name'], $overwrite, true);
 	}
 
 	/**
@@ -489,6 +538,93 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 	}
 
 	/* ------------------------------------------------------------------ */
+	/* Text to speech                                                      */
+	/* ------------------------------------------------------------------ */
+
+	/**
+	 * The Piper helper, built on first use.
+	 *
+	 * __DIR__ is the module directory wherever FreePBX has installed it, which
+	 * is the whole point: the runtime and the voices are found relative to it,
+	 * never at a path compiled into this file.
+	 */
+	public function tts()
+	{
+		if ($this->ttsHelper === null) {
+			require_once __DIR__ . '/lib/Tts.php';
+
+			$this->ttsHelper = new \FreePBX\modules\OrykMedia\Tts(__DIR__);
+		}
+
+		return $this->ttsHelper;
+	}
+
+	/**
+	 * Whether Piper is usable here, shaped for whoever is asking.
+	 *
+	 * The per-check detail names paths on the server, which is exactly what an
+	 * administrator needs to fix a broken install and exactly what nobody else
+	 * has any business seeing. Non-admins get the one-line reason.
+	 */
+	public function ttsStatus()
+	{
+		$status = $this->tts()->status();
+		$user = $this->getUser();
+
+		if (empty($user['admin'])) {
+			unset($status['checks']);
+		}
+
+		return $status;
+	}
+
+	/**
+	 * Synthesise $text and save it as <name>.wav, exactly as if it had been
+	 * recorded from the microphone.
+	 *
+	 * The name is checked -- and the "already exists" question settled -- before
+	 * Piper is started, so a request that was never going to be saved does not
+	 * spend a minute of CPU first.
+	 */
+	public function generateTts($name, $text, $voice, $rate, $overwrite = false)
+	{
+		if (!$this->isValidName($name)) {
+			return ['status' => false, 'message' => 'Name must be letters, numbers, dot, dash or underscore -- no spaces.'];
+		}
+
+		if (!$overwrite && $this->recordingExists($name)) {
+			return ['status' => false, 'exists' => true, 'message' => 'A recording called "' . $name . '" already exists.'];
+		}
+
+		if (!$this->isCustomDirWritable()) {
+			return ['status' => false, 'message' => 'Cannot write ' . $this->getCustomDir() . '.'];
+		}
+
+		$tts = $this->tts();
+		$made = $tts->synthesize($text, $voice, $rate);
+
+		if (empty($made['status'])) {
+			return $made;
+		}
+
+		try {
+			$stored = $this->storeWav($name, $made['path'], $overwrite, false);
+		} finally {
+			// Whatever happened above, nothing of ours is left in /tmp.
+			$tts->cleanup();
+		}
+
+		if (!empty($stored['status'])) {
+			$stored['seconds'] = $made['seconds'];
+			$stored['rate'] = $made['rate'];
+			$stored['voice'] = $voice;
+			$stored['message'] = 'Generated and saved ' . basename($stored['path']);
+		}
+
+		return $stored;
+	}
+
+	/* ------------------------------------------------------------------ */
 	/* BMO                                                                 */
 	/* ------------------------------------------------------------------ */
 
@@ -517,7 +653,10 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 		$setting['authenticate'] = true;
 		$setting['allowremote'] = false;
 
-		return in_array($req, ['list', 'save', 'delete', 'play'], true);
+		return in_array($req, [
+			'list', 'save', 'delete', 'play',
+			'getTtsStatus', 'getTtsVoices', 'generateTts',
+		], true);
 	}
 
 	/**
@@ -566,6 +705,39 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 				$force = !empty($_REQUEST['force']) && $_REQUEST['force'] !== 'false';
 
 				$result = $this->deleteRecording($name, $force);
+
+				if (!empty($result['status'])) {
+					$result['recordings'] = $this->listRecordings();
+				}
+
+				return $result;
+
+			case 'getTtsStatus':
+				return array_merge(['status' => true], $this->ttsStatus());
+
+			case 'getTtsVoices':
+				return [
+					'status' => true,
+					'voices' => $this->tts()->availableVoices(),
+				];
+
+			case 'generateTts':
+				$overwrite = !empty($_REQUEST['overwrite']) && $_REQUEST['overwrite'] !== 'false';
+
+				// Synthesis is CPU-bound and a long text can outlast the default
+				// ajax time limit, which would kill PHP mid-Piper and leave the
+				// browser with nothing to show for it. tts() first: it is what
+				// loads the class the constant lives on.
+				$this->tts();
+				@set_time_limit(\FreePBX\modules\OrykMedia\Tts::PIPER_TIMEOUT + 60);
+
+				$result = $this->generateTts(
+					$name,
+					isset($_REQUEST['text']) ? $_REQUEST['text'] : '',
+					isset($_REQUEST['voice']) ? $_REQUEST['voice'] : '',
+					isset($_REQUEST['rate']) ? $_REQUEST['rate'] : 0,
+					$overwrite
+				);
 
 				if (!empty($result['status'])) {
 					$result['recordings'] = $this->listRecordings();

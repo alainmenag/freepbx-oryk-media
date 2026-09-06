@@ -1,3 +1,9 @@
 
 .DS_Store
 .vscode
+
+# The Piper runtime and the voice models: ~115 MB together, fetched by
+# install/fetch-piper.sh rather than carried in history. See LICENSES/README.md.
+vendor/piper/
+voices/*.onnx
+voices/*.onnx.json

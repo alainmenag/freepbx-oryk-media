@@ -3,8 +3,8 @@
 	<rawname>oryk_media</rawname>
 	<name>Media</name>
 	<repo>commercial</repo>
-	<version>2.0.0</version>
-	<dbversion>2.0.0</dbversion>
+	<version>2.1.0</version>
+	<dbversion>2.1.0</dbversion>
 	<publisher>Oryk</publisher>
 	<type>setup</type>
 	<class>Oryk_media</class>
@@ -14,6 +14,12 @@
 	<license>AGPLv3</license>
 	<licenselink>http://www.gnu.org/licenses/agpl-3.0.txt</licenselink>
 	<changelog>
+		*2.1.0* Second way to create media: local Piper text to speech, alongside
+		        the microphone recorder. Runs entirely on this server -- no API,
+		        no network. Optional: without the bundled runtime or sox the tab
+		        says so and recording is unaffected. Runtime and voices install
+		        with install/fetch-piper.sh; voices are an explicit server-side
+		        registry, never a directory scan.
 		*2.0.0* Rewritten as a browser audio recorder: record from a mic in the
 		        admin UI and save straight into the custom sounds directory for
 		        use in System Recordings. Removes the dark mode / touch scroll
@@ -24,7 +30,7 @@
 		*1.0.1* New
 	</changelog>
 	<category>Oryk</category>
-	<description>Record audio in the browser and save it for System Recordings.</description>
+	<description>Record audio in the browser or generate it with local text to speech, and save it for System Recordings.</description>
 	<more-info>https://oryk.com/voip/media</more-info>
 	<menuitems>
 		<oryk_media category="Oryk" order="1" display="oryk_media" access="all" requires_auth="true">
