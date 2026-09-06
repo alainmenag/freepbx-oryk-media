@@ -3,8 +3,8 @@
 	<rawname>oryk_media</rawname>
 	<name>Media</name>
 	<repo>commercial</repo>
-	<version>2.1.0</version>
-	<dbversion>2.1.0</dbversion>
+	<version>2.2.0</version>
+	<dbversion>2.2.0</dbversion>
 	<publisher>Oryk</publisher>
 	<type>setup</type>
 	<class>Oryk_media</class>
@@ -14,6 +14,11 @@
 	<license>AGPLv3</license>
 	<licenselink>http://www.gnu.org/licenses/agpl-3.0.txt</licenselink>
 	<changelog>
+		*2.2.0* Split into a list page and an editor, the shape the rest of
+		        FreePBX uses. The module page is now only the list, with an Add
+		        button; an "edit" parameter naming a recording opens it for
+		        re-recording or regeneration, and an empty one starts a new
+		        recording. Saving returns to the list.
 		*2.1.0* Second way to create media: local Piper text to speech, alongside
 		        the microphone recorder. Runs entirely on this server -- no API,
 		        no network. Optional: without the bundled runtime or sox the tab

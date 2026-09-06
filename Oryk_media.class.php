@@ -23,6 +23,9 @@ use FreePBX_Helpers;
  *
  * Both paths end in the same place, as the same kind of file, listed and
  * deleted by the same code.
+ *
+ * The module is two pages, in the shape the rest of FreePBX uses: a list of
+ * what exists, and an editor for one recording. See showPage().
  */
 class Oryk_media extends FreePBX_Helpers implements \BMO
 {
@@ -64,24 +67,107 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 		$this->astman = $freepbx->astman;
 	}
 
+	/**
+	 * Two pages, told apart by ?edit=.
+	 *
+	 *   ?display=oryk_media              the list: what exists
+	 *   ?display=oryk_media&edit=<name>  the editor, bound to that recording
+	 *   ?display=oryk_media&edit=        the editor, writing a new one
+	 *
+	 * `edit` present but empty is deliberate rather than a degenerate case: it
+	 * is the same page doing the same thing, minus a file to replace. The
+	 * parameter is the name itself, not an id, because that name *is* the
+	 * identity here -- there is no row anywhere, only a file in a directory.
+	 */
 	public function showPage()
 	{
-		$page = isset($_REQUEST['display']) ? $_REQUEST['display'] : 'default';
-
-		switch ($page) {
-			case 'oryk_media':
-				return load_view(__DIR__ . '/views/media.php', [
-					'user' => $this->getUser(),
-					'customDir' => $this->getCustomDir(),
-					'writable' => $this->isCustomDirWritable(),
-					'maxBytes' => self::MAX_UPLOAD_BYTES,
-					'recordings' => $this->listRecordings(),
-					'tts' => $this->ttsStatus(),
-					'assetUrl' => [$this, 'assetUrl'],
-				]);
-			default:
-				break;
+		if (!isset($_REQUEST['edit'])) {
+			// No rows here: the table fetches its own page from ajax.php, so the
+			// first paint and every search, sort and delete after it go through
+			// exactly one path.
+			return load_view(__DIR__ . '/views/list.php', [
+				'customDir' => $this->getCustomDir(),
+				'writable' => $this->isCustomDirWritable(),
+				'saved' => $this->savedName(),
+				'assetUrl' => [$this, 'assetUrl'],
+			]);
 		}
+
+		$wanted = trim((string) $_REQUEST['edit']);
+
+		// A name that could never exist on disk is a typo or a hand-edited URL,
+		// not a recording. Sending it to the editor would open a form bound to
+		// something unreachable, so it goes back to the list instead.
+		if ($wanted !== '' && !$this->isValidName($wanted)) {
+			header('Location: ?display=oryk_media');
+
+			return;
+		}
+
+		// A name that is merely not taken yet is a prefill, not a target: Save
+		// is then a first write and still has to confirm before replacing
+		// anything, exactly as it would from a blank editor.
+		$editing = $this->recordingExists($wanted) ? $wanted : '';
+
+		return load_view(__DIR__ . '/views/edit.php', [
+			'customDir' => $this->getCustomDir(),
+			'writable' => $this->isCustomDirWritable(),
+			'maxBytes' => self::MAX_UPLOAD_BYTES,
+			'editing' => $editing,
+			'prefill' => $wanted,
+			'playable' => $editing !== '' && $this->playableExtension($editing) !== null,
+			'usage' => $editing !== '' ? $this->getUsage($editing) : [],
+			'tts' => $this->ttsStatus(),
+			'assetUrl' => [$this, 'assetUrl'],
+		]);
+	}
+
+	/**
+	 * Buttons FreePBX draws in the page header.
+	 *
+	 * Deliberately not the usual submit/delete names: those are wired by core
+	 * to a `form.fpbx-submit`, and neither page has one -- a recording is not a
+	 * form post, it is an encoded blob going up over ajax. These are ours, and
+	 * shared.js's onAction() binds them.
+	 */
+	public function getActionBar($request)
+	{
+		if (!isset($_REQUEST['edit'])) {
+			return [
+				'orykadd' => [
+					'name' => 'orykadd',
+					'id' => 'orykadd',
+					'value' => _('Add'),
+				],
+			];
+		}
+
+		return [
+			'oryksave' => [
+				'name' => 'oryksave',
+				'id' => 'oryksave',
+				'value' => _('Save'),
+			],
+			'orykclose' => [
+				'name' => 'orykclose',
+				'id' => 'orykclose',
+				'value' => _('Close'),
+			],
+		];
+	}
+
+	/**
+	 * Name the editor says it just wrote, for the list to point at.
+	 *
+	 * It arrives in the URL, so it is checked like any other input before it
+	 * reaches a template -- it only ever ends up compared against names the
+	 * server itself produced, but that is a property of today's callers.
+	 */
+	private function savedName()
+	{
+		$saved = isset($_REQUEST['saved']) ? trim((string) $_REQUEST['saved']) : '';
+
+		return $this->isValidName($saved) ? $saved : '';
 	}
 
 	/**
@@ -289,6 +375,79 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 		});
 
 		return array_values($byName);
+	}
+
+	/**
+	 * One page of the recordings table, shaped for bootstrap-table's
+	 * server-side pagination: `total` before the page is cut, `rows` after.
+	 *
+	 * There is no database behind this one -- the table is a directory -- so
+	 * the search, the sort and the slice are applied to the scanned array
+	 * rather than pushed into SQL. That is cheap at the sizes a custom sounds
+	 * directory reaches, and it buys the same request contract every other
+	 * FreePBX list uses: the table asks for what it wants, and a delete only
+	 * has to tell it to refresh.
+	 */
+	private function listResponse()
+	{
+		$rows = $this->listRecordings();
+
+		$search = isset($_REQUEST['search']) ? trim((string) $_REQUEST['search']) : '';
+
+		if ($search !== '') {
+			$needle = strtolower($search);
+
+			$rows = array_values(array_filter($rows, function ($row) use ($needle) {
+				// Formats are searchable too: "ulaw" is a real question to ask
+				// of this list, and the name alone cannot answer it.
+				$haystack = strtolower($row['name'] . ' ' . implode(' ', $row['formats']));
+
+				return strpos($haystack, $needle) !== false;
+			}));
+		}
+
+		// Only a heading the table actually offers as sortable is honoured.
+		// Anything else falls back to newest first rather than being refused --
+		// a stale bookmark should still render a list.
+		$sortable = ['name', 'formats', 'bytes', 'modified'];
+		$sort = isset($_REQUEST['sort']) ? (string) $_REQUEST['sort'] : '';
+		$sort = in_array($sort, $sortable, true) ? $sort : 'modified';
+		$desc = strtolower(isset($_REQUEST['order']) ? (string) $_REQUEST['order'] : '') === 'desc';
+
+		usort($rows, function ($a, $b) use ($sort, $desc) {
+			switch ($sort) {
+				case 'name':
+					// Natural order, so main-2 sorts before main-10.
+					$cmp = strnatcasecmp($a['name'], $b['name']);
+					break;
+
+				case 'formats':
+					$cmp = strcasecmp(implode(',', $a['formats']), implode(',', $b['formats']));
+					break;
+
+				default:
+					$cmp = $a[$sort] <=> $b[$sort];
+					break;
+			}
+
+			// Ties on size or date are common and would otherwise shuffle
+			// between requests, which reads as a bug while paging.
+			if ($cmp === 0) {
+				$cmp = strnatcasecmp($a['name'], $b['name']);
+			}
+
+			return $desc ? -$cmp : $cmp;
+		});
+
+		$total = count($rows);
+
+		$limit = isset($_REQUEST['limit']) ? (int) $_REQUEST['limit'] : 0;
+		$offset = isset($_REQUEST['offset']) ? max(0, (int) $_REQUEST['offset']) : 0;
+
+		return [
+			'total' => $total,
+			'rows' => $limit > 0 ? array_slice($rows, $offset, $limit) : array_slice($rows, $offset),
+		];
 	}
 
 	/**
@@ -808,34 +967,19 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 
 		switch ($command) {
 			case 'list':
-				return [
-					'status' => true,
-					'dir' => $this->getCustomDir(),
-					'writable' => $this->isCustomDirWritable(),
-					'recordings' => $this->listRecordings(),
-				];
+				return $this->listResponse();
 
 			case 'save':
 				$overwrite = !empty($_REQUEST['overwrite']) && $_REQUEST['overwrite'] !== 'false';
 
-				$result = $this->saveUpload($name, $overwrite);
-
-				if (!empty($result['status'])) {
-					$result['recordings'] = $this->listRecordings();
-				}
-
-				return $result;
+				// No list comes back with a write any more: the table asks for
+				// its own page, with whatever search and sort are in force.
+				return $this->saveUpload($name, $overwrite);
 
 			case 'delete':
 				$force = !empty($_REQUEST['force']) && $_REQUEST['force'] !== 'false';
 
-				$result = $this->deleteRecording($name, $force);
-
-				if (!empty($result['status'])) {
-					$result['recordings'] = $this->listRecordings();
-				}
-
-				return $result;
+				return $this->deleteRecording($name, $force);
 
 			case 'getTtsStatus':
 				return array_merge(['status' => true], $this->ttsStatus());
@@ -856,19 +1000,13 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 				$this->tts();
 				@set_time_limit(\FreePBX\modules\OrykMedia\Tts::PIPER_TIMEOUT + 60);
 
-				$result = $this->generateTts(
+				return $this->generateTts(
 					$name,
 					isset($_REQUEST['text']) ? $_REQUEST['text'] : '',
 					isset($_REQUEST['voice']) ? $_REQUEST['voice'] : '',
 					isset($_REQUEST['rate']) ? $_REQUEST['rate'] : 0,
 					$overwrite
 				);
-
-				if (!empty($result['status'])) {
-					$result['recordings'] = $this->listRecordings();
-				}
-
-				return $result;
 
 			case 'play':
 				// Only reached if ajaxCustomHandler is not honored on this version.

@@ -115,8 +115,11 @@ lib/
   Tts.php                Piper: readiness checks, validation, execution
   voices.php             the voice registry -- the allowlist
 views/
-  media.php              both creation methods, plus the saved list
+  list.php               the list: what exists
+  edit.php               the editor: both creation methods, on tabs
 assets/
+  js/shared.js           transport, name rule, formatting, where the pages are
+  js/list.js             the recordings table, and deleting from it
   js/recorder.js         mic capture, resample, WAV encode, upload
   js/tts.js              the Text to Speech panel and the tab switch
   css/media.css          page-scoped styles
@@ -126,6 +129,30 @@ bin/piper/               Piper executable, its libraries, espeak-ng-data  (not i
 voices/                  *.onnx and *.onnx.json                          (not in git)
 LICENSES/                licences and provenance for everything bundled
 ```
+
+## The two pages
+
+Like the rest of FreePBX, the module is a list and an editor, told apart by one
+query parameter:
+
+| URL | Page |
+| --- | --- |
+| `?display=oryk_media` | the list, plus an **Add** button |
+| `?display=oryk_media&edit=<name>` | the editor, replacing that recording |
+| `?display=oryk_media&edit=` | the editor, writing a new one |
+
+`edit` present but empty is deliberate: same page, same behaviour, minus a file
+to replace. The parameter is the recording's *name* rather than an id because
+the name is the identity here — there is no row in any table, only a file in a
+directory.
+
+A name that could never exist (`edit=../../etc`) goes back to the list. A name
+that is merely not taken yet is treated as a prefill, not a target: Save is
+then a first write, and still asks before replacing anything.
+
+Saving returns to the list with `&saved=<name>`, which highlights the row that
+was just written. Delete lives only on the list, where the in-use check and its
+"Delete anyway" already are.
 
 ## How Text to Speech runs
 

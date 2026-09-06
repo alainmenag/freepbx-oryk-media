@@ -1,9 +1,9 @@
 /*
  * media.css
  *
- * Scoped to .oryk-media and loaded only on this module's page (views/media.php
- * links it directly, mtime-stamped). Nothing here leaks into the rest of the
- * FreePBX admin.
+ * Scoped to .oryk-media and loaded only on this module's pages (views/list.php
+ * and views/edit.php link it directly, mtime-stamped). Nothing here leaks into
+ * the rest of the FreePBX admin.
  */
 
 .oryk-media .oryk-recorder {
@@ -114,14 +114,22 @@
 	color: #c9302c;
 }
 
-.oryk-media .oryk-list td {
-	vertical-align: middle;
+/* The actions cell is a flex row so the player, Edit and Delete stay on one
+   line and the player is the thing that gives way when the column narrows. */
+.oryk-media .oryk-row-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+	white-space: nowrap;
 }
 
 .oryk-media .oryk-row-actions audio {
 	height: 32px;
 	vertical-align: middle;
 	max-width: 260px;
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 .oryk-media .oryk-row-note:empty {
@@ -135,8 +143,8 @@
 }
 
 .oryk-media .oryk-editing {
-	margin: 0 0 12px;
-	padding: 8px 12px;
+	margin: 0 0 18px;
+	padding: 10px 14px;
 	border-left: 3px solid #f0ad4e;
 	background: #fcf8e3;
 	color: #8a6d3b;
@@ -150,8 +158,41 @@
 	padding: 0;
 }
 
-.oryk-media .oryk-editing .btn {
-	margin-left: 8px;
+.oryk-media .oryk-editing-audio {
+	margin-top: 10px;
+	max-width: 420px;
+}
+
+.oryk-media .oryk-editing-usage {
+	margin-top: 8px;
+	font-style: italic;
+}
+
+/* ---------------------------------------------------------------------- */
+/* The list page                                                          */
+/* ---------------------------------------------------------------------- */
+
+.oryk-media .oryk-inline-help {
+	display: inline;
+	margin: 0;
+}
+
+/* Lifted into bootstrap-table's toolbar row by data-toolbar, so the heading
+   has to stop behaving like a block heading and sit next to the search box. */
+.oryk-media .oryk-toolbar h2 {
+	margin: 0;
+	line-height: 34px;
+}
+
+/* The row the editor just wrote, so a save that navigated away still lands
+   somewhere visible. Fades out rather than staying marked forever. */
+.oryk-media .oryk-row-new > td {
+	animation: oryk-settle 2.4s ease-out 1;
+}
+
+@keyframes oryk-settle {
+	0%, 30% { background-color: #fcf8e3; }
+	100% { background-color: transparent; }
 }
 
 /* ---------------------------------------------------------------------- */
