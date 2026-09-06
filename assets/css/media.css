@@ -1,0 +1,133 @@
+/*
+ * media.css
+ *
+ * Scoped to .oryk-media and loaded only on this module's page (views/media.php
+ * links it directly, mtime-stamped). Nothing here leaks into the rest of the
+ * FreePBX admin.
+ */
+
+.oryk-media .oryk-recorder {
+	margin: 18px 0 8px;
+}
+
+.oryk-media .oryk-recorder-controls {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.oryk-media .oryk-timer {
+	font-family: Menlo, Consolas, monospace;
+	font-size: 26px;
+	line-height: 1;
+	font-variant-numeric: tabular-nums;
+	color: #333;
+}
+
+.oryk-media .oryk-state {
+	color: #777;
+	font-size: 13px;
+}
+
+.oryk-media .oryk-state.is-live {
+	color: #e81f64;
+	font-weight: 600;
+}
+
+.oryk-media .oryk-state.is-live::before {
+	content: '';
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	margin-right: 6px;
+	border-radius: 50%;
+	background: #e81f64;
+	animation: oryk-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes oryk-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.25; }
+}
+
+.oryk-media .oryk-meter {
+	height: 8px;
+	margin: 14px 0 10px;
+	border-radius: 4px;
+	background: #e6e9ed;
+	overflow: hidden;
+}
+
+.oryk-media .oryk-meter-fill {
+	width: 0;
+	height: 100%;
+	background: #35b37e;
+	transition: width 60ms linear;
+}
+
+.oryk-media .oryk-meter-fill.is-hot {
+	background: #e8543f;
+}
+
+.oryk-media .oryk-scope {
+	display: block;
+	width: 100%;
+	height: 90px;
+	background: #fafbfc;
+	border: 1px solid #e6e9ed;
+	border-radius: 4px;
+}
+
+.oryk-media .oryk-review {
+	margin-top: 20px;
+	padding-top: 18px;
+	border-top: 1px solid #e6e9ed;
+}
+
+.oryk-media .oryk-preview {
+	width: 100%;
+	max-width: 520px;
+	margin-bottom: 16px;
+}
+
+.oryk-media .oryk-review-actions {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-top: 10px;
+}
+
+.oryk-media .oryk-save-state {
+	font-size: 13px;
+	color: #777;
+}
+
+.oryk-media .oryk-save-state.is-good {
+	color: #35b37e;
+}
+
+.oryk-media .oryk-save-state.is-bad {
+	color: #c9302c;
+}
+
+.oryk-media .oryk-list td {
+	vertical-align: middle;
+}
+
+.oryk-media .oryk-row-actions audio {
+	height: 32px;
+	vertical-align: middle;
+	max-width: 260px;
+}
+
+.oryk-media .oryk-row-note:empty {
+	display: none;
+}
+
+.oryk-media .oryk-row-note {
+	margin-top: 4px;
+	font-size: 12px;
+	color: #c9302c;
+}
