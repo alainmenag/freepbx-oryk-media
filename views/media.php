@@ -82,6 +82,11 @@ $h = function ($v) {
 					</div>
 				</div>
 
+				<div id="orykMediaEditing" class="oryk-editing hidden">
+					Re-recording <code id="orykMediaEditingName"></code> &mdash; Save replaces it.
+					<button type="button" id="orykMediaEditCancel" class="btn btn-xs btn-default">Cancel</button>
+				</div>
+
 				<div class="oryk-recorder">
 					<div class="oryk-recorder-controls">
 						<button type="button" id="orykMediaRecord" class="btn btn-danger btn-lg">
@@ -97,7 +102,8 @@ $h = function ($v) {
 						<div id="orykMediaMeterFill" class="oryk-meter-fill"></div>
 					</div>
 
-					<canvas id="orykMediaScope" class="oryk-scope" height="90"></canvas>
+					<canvas id="orykMediaScope" class="oryk-scope" height="90"
+						title="Click to open the microphone and check levels"></canvas>
 				</div>
 
 				<div id="orykMediaReview" class="oryk-review hidden">

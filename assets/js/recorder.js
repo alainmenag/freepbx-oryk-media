@@ -40,6 +40,9 @@
 	var takeBlob = null;     // encoded WAV of the finished take, null until stop
 	var previewUrl = null;   // object URL behind the player: take or paused monitor
 	var monitoring = false;
+	var editing = '';        // name this take is re-recording, from ?edit=
+
+	var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 	/* ------------------------------------------------------------------ */
 	/* Small helpers                                                       */
@@ -428,6 +431,40 @@
 	/* Meter and scope                                                     */
 	/* ------------------------------------------------------------------ */
 
+	/** Size the canvas to its box and hand back a cleared 2d context. */
+	function scopeContext() {
+		var canvas = el.scope;
+		var width = canvas.clientWidth || 600;
+
+		if (canvas.width !== width) {
+			canvas.width = width;
+		}
+
+		var g = canvas.getContext('2d');
+
+		g.clearRect(0, 0, width, canvas.height);
+
+		return g;
+	}
+
+	/** Flat line plus a prompt, shown whenever the input is not live. */
+	function drawIdle() {
+		if (!el.scope) {
+			return;
+		}
+
+		var g = scopeContext();
+		var width = el.scope.width;
+		var mid = el.scope.height / 2;
+
+		g.lineWidth = 1.5;
+		g.strokeStyle = '#dce1e7';
+		g.beginPath();
+		g.moveTo(0, mid);
+		g.lineTo(width, mid);
+		g.stroke();
+	}
+
 	function drawFrame() {
 		if (!analyser || !el.scope) {
 			return;
@@ -453,17 +490,10 @@
 			el.meter.classList.toggle('is-hot', peak > 0.97);
 		}
 
-		var canvas = el.scope;
-		var width = canvas.clientWidth || 600;
+		var g = scopeContext();
+		var width = el.scope.width;
+		var height = el.scope.height;
 
-		if (canvas.width !== width) {
-			canvas.width = width;
-		}
-
-		var g = canvas.getContext('2d');
-		var height = canvas.height;
-
-		g.clearRect(0, 0, width, height);
 		g.lineWidth = 1.5;
 		g.strokeStyle = recording && !paused ? '#e81f64' : '#9aa4b1';
 		g.beginPath();
@@ -496,6 +526,73 @@
 			el.meter.style.width = '0%';
 			el.meter.classList.remove('is-hot');
 		}
+
+		drawIdle();
+	}
+
+	function live() {
+		return !!(stream && stream.active);
+	}
+
+	/**
+	 * Run the scope on an open mic, without recording. Idempotent, so every
+	 * trigger can just call it. Record then reuses the mic — openMic()
+	 * short-circuits on an active stream.
+	 *
+	 * Failures stay quiet: this runs unprompted, and the only reason it fails
+	 * is a mic that is not available, which Record reports properly when the
+	 * user actually asks for one.
+	 */
+	function armScope() {
+		if (recording || opening || live()) {
+			return;
+		}
+
+		opening = true;
+
+		openMic().then(function () {
+			opening = false;
+
+			// Permission is not a gesture. Autoplay policy can leave the context
+			// suspended, which would draw a live-looking but silent flat line —
+			// back off and leave the prompt up, since a click resumes it.
+			if (!ctx || ctx.state !== 'running') {
+				closeMic();
+				drawIdle();
+				return;
+			}
+
+			scopeLoop.start();
+		}).catch(function () {
+			opening = false;
+			closeMic();
+			drawIdle();
+		});
+	}
+
+	/**
+	 * getUserMedia needs permission, not a gesture — so once the mic is granted
+	 * the scope can run on its own. Watch the grant and arm on it; browsers
+	 * without the permissions API fall back to the click.
+	 */
+	function armWhenPermitted() {
+		if (!navigator.permissions || !navigator.permissions.query) {
+			return;
+		}
+
+		navigator.permissions.query({ name: 'microphone' }).then(function (status) {
+			if (status.state === 'granted') {
+				armScope();
+			}
+
+			status.onchange = function () {
+				if (status.state === 'granted') {
+					armScope();
+				}
+			};
+		}).catch(function () {
+			/* 'microphone' is not queryable here; the click path still arms */
+		});
 	}
 
 	function paintTimer() {
@@ -725,6 +822,46 @@
 		}
 	}
 
+	/* ------------------------------------------------------------------ */
+	/* Re-recording an existing file                                       */
+	/* ------------------------------------------------------------------ */
+
+	function editUrl(name) {
+		// Strip any edit= already present, then normalise whatever separator the
+		// removal left behind — it is not always the leading '?'.
+		var query = window.location.search.replace(/[?&]edit=[^&]*/g, '').replace(/^[?&]+/, '');
+
+		return window.location.pathname + '?' + (query ? query + '&' : '') +
+			'edit=' + encodeURIComponent(name);
+	}
+
+	function readEditParam() {
+		var match = /[?&]edit=([^&]*)/.exec(window.location.search);
+
+		return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : '';
+	}
+
+	function setEditing(name) {
+		editing = name || '';
+
+		show(el.editing, !!editing);
+		text(el.editingName, editing ? 'custom/' + editing : '');
+
+		if (editing) {
+			el.name.value = editing;
+		}
+	}
+
+	/** Drop edit mode without a reload, and take ?edit= out of the URL. */
+	function clearEditing() {
+		setEditing('');
+
+		if (window.history && window.history.replaceState && readEditParam()) {
+			window.history.replaceState({}, '',
+				window.location.pathname + window.location.search.replace(/([?&])edit=[^&]*&?/, '$1').replace(/[?&]$/, ''));
+		}
+	}
+
 	function discardTake() {
 		takeBlob = null;
 		clearPreview();
@@ -806,7 +943,7 @@
 	function save(overwrite) {
 		var name = (el.name.value || '').trim();
 
-		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+		if (!NAME_RE.test(name)) {
 			text(el.saveState, 'Name must be letters, numbers, dot, dash or underscore.');
 			el.saveState.className = 'oryk-save-state is-bad';
 			return;
@@ -827,7 +964,9 @@
 		form.append('module', MODULE);
 		form.append('command', 'save');
 		form.append('name', name);
-		form.append('overwrite', overwrite ? 'true' : 'false');
+		// Re-recording that same file is already a confirmed overwrite. Renaming
+		// while in edit mode is not — that would clobber a different recording.
+		form.append('overwrite', (overwrite || name === editing) ? 'true' : 'false');
 		form.append('audio', takeBlob, name + '.wav');
 
 		el.save.disabled = true;
@@ -842,6 +981,7 @@
 				el.saveState.className = 'oryk-save-state is-good';
 				render(res.recordings || []);
 				toast(res.message || 'Saved', 'success');
+				clearEditing();
 				discardTake();
 				return;
 			}
@@ -915,6 +1055,8 @@
 				'<td>' + escapeHtml(when(r.modified)) + '</td>' +
 				'<td class="text-right oryk-row-actions">' +
 				(r.playable ? '<audio controls preload="none" src="' + playUrl + '"></audio>' : '<span class="text-muted">not previewable</span>') +
+				' <a class="btn btn-xs btn-default" href="' + escapeHtml(editUrl(r.name)) + '">' +
+				'<i class="fa fa-microphone"></i> Edit</a>' +
 				' <button type="button" class="btn btn-xs btn-default" data-oryk-delete="' + escapeHtml(r.name) + '">' +
 				'<i class="fa fa-trash"></i></button>' +
 				'</td></tr>';
@@ -966,7 +1108,10 @@
 			download: $('orykMediaDownload'),
 			discard: $('orykMediaDiscard'),
 			saveState: $('orykMediaSaveState'),
-			list: $('orykMediaList')
+			list: $('orykMediaList'),
+			editing: $('orykMediaEditing'),
+			editingName: $('orykMediaEditingName'),
+			editCancel: $('orykMediaEditCancel')
 		};
 
 		if (!el.record) {
@@ -974,6 +1119,15 @@
 		}
 
 		render(CFG.recordings || []);
+
+		// Arrived from a row's Edit link: prefill the name and say so, so Save
+		// replaces that file instead of stopping on the "already exists" step.
+		var wanted = readEditParam();
+
+		if (wanted && NAME_RE.test(wanted)) {
+			setEditing(wanted);
+			el.editing.scrollIntoView({ block: 'center' });
+		}
 
 		var supported = window.isSecureContext !== false &&
 			navigator.mediaDevices &&
@@ -990,6 +1144,11 @@
 		}
 
 		listDevices();
+		drawIdle();
+
+		el.scope.addEventListener('click', armScope);
+
+		armWhenPermitted();
 
 		el.record.addEventListener('click', function () {
 			if (recording) {
@@ -1000,6 +1159,10 @@
 		});
 
 		el.pause.addEventListener('click', togglePause);
+		el.editCancel.addEventListener('click', function () {
+			clearEditing();
+			el.name.value = '';
+		});
 		el.discard.addEventListener('click', discardTake);
 		el.save.addEventListener('click', function () {
 			save(false);
@@ -1022,9 +1185,13 @@
 
 		// Switching input device mid-session means reopening the mic.
 		el.device.addEventListener('change', function () {
-			if (!recording) {
-				closeMic();
+			if (recording) {
+				return;
 			}
+
+			stopDrawing();
+			closeMic();
+			armScope();       // follow the selection instead of holding the old mic
 		});
 
 		el.saveState.addEventListener('click', function (event) {
