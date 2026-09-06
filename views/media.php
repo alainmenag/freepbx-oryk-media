@@ -82,6 +82,11 @@ $h = function ($v) {
 					</div>
 				</div>
 
+				<div id="orykMediaEditing" class="oryk-editing hidden">
+					Re-recording <code id="orykMediaEditingName"></code> &mdash; Save replaces it.
+					<button type="button" id="orykMediaEditCancel" class="btn btn-xs btn-default">Cancel</button>
+				</div>
+
 				<div class="oryk-recorder">
 					<div class="oryk-recorder-controls">
 						<button type="button" id="orykMediaRecord" class="btn btn-danger btn-lg">
@@ -90,20 +95,23 @@ $h = function ($v) {
 						<button type="button" id="orykMediaPause" class="btn btn-default btn-lg hidden">
 							<i class="fa fa-pause"></i> <span>Pause</span>
 						</button>
-						<span id="orykMediaTimer" class="oryk-timer">00:00</span>
-						<span id="orykMediaState" class="oryk-state">Ready</span>
+						<span id="orykMediaTimer" class="oryk-timer">00:00:00:00</span>
 					</div>
 
 					<div class="oryk-meter" aria-hidden="true">
 						<div id="orykMediaMeterFill" class="oryk-meter-fill"></div>
 					</div>
 
-					<canvas id="orykMediaScope" class="oryk-scope" height="90"></canvas>
+					<canvas id="orykMediaScope" class="oryk-scope" height="90"
+						title="Click to open the microphone and check levels"></canvas>
 				</div>
 
 				<div id="orykMediaReview" class="oryk-review hidden">
 					<audio id="orykMediaPreview" controls class="oryk-preview"></audio>
 
+					<div id="orykMediaState" class="oryk-state">Ready</div>
+
+					<div id="orykMediaSaveForm">
 					<div class="element-container">
 						<div class="row">
 							<div class="form-group">
@@ -141,6 +149,7 @@ $h = function ($v) {
 							Discard
 						</button>
 						<span id="orykMediaSaveState" class="oryk-save-state"></span>
+					</div>
 					</div>
 				</div>
 

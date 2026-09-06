@@ -15,6 +15,8 @@
 
 	var CFG = (window.OrykMedia && window.OrykMedia.config) || {};
 	var MAX_SECONDS = 20 * 60;
+	var TICK_MS = 50;        // timer repaint interval; the clock shows hundredths
+	var ZERO = '00:00:00:00';
 	var AJAX = 'ajax.php';
 	var MODULE = 'oryk_media';
 
@@ -25,7 +27,6 @@
 	var analyser = null;
 	var capture = null;      // AudioWorkletNode or ScriptProcessorNode
 	var sink = null;         // muted gain, only so ScriptProcessor is pulled
-	var rafId = null;
 
 	var chunks = [];         // Float32Array pieces at ctx.sampleRate
 	var frames = 0;
@@ -33,9 +34,15 @@
 	var paused = false;
 	var startedAt = 0;
 	var elapsedBefore = 0;
+	var lastClock = '';
+	var opening = false;
 
-	var takeBlob = null;     // encoded WAV of the current take
-	var takeUrl = null;
+	var takeBlob = null;     // encoded WAV of the finished take, null until stop
+	var previewUrl = null;   // object URL behind the player: take or paused monitor
+	var monitoring = false;
+	var editing = '';        // name this take is re-recording, from ?edit=
+
+	var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 	/* ------------------------------------------------------------------ */
 	/* Small helpers                                                       */
@@ -57,6 +64,60 @@
 		}
 	}
 
+	/**
+	 * A repeating loop that can actually be stopped. Cancelling the handle is
+	 * not enough — it only ever points at the most recent run, so a second
+	 * loop would leave one behind that nothing could reach. Each run carries
+	 * its generation; stop() bumps it and strays retire on their next wake.
+	 * Body returns false to stop.
+	 */
+	function makeLoop(schedule, cancel, body) {
+		var gen = 0;
+		var handle = null;
+
+		function stop() {
+			gen++;
+
+			if (handle !== null) {
+				cancel(handle);
+				handle = null;
+			}
+		}
+
+		function run(mine) {
+			if (mine !== gen) {
+				return;
+			}
+
+			handle = null;
+
+			if (body() === false) {
+				return;
+			}
+
+			handle = schedule(function () {
+				run(mine);
+			});
+		}
+
+		return {
+			start: function () {
+				stop();
+				run(gen);
+			},
+			stop: stop
+		};
+	}
+
+	function setButton(node, label, icon) {
+		if (!node) {
+			return;
+		}
+
+		node.querySelector('span').textContent = label;
+		node.querySelector('i').className = 'fa fa-' + icon;
+	}
+
 	function fail(message) {
 		text(el.error, message);
 		show(el.error, true);
@@ -67,10 +128,16 @@
 	}
 
 	function clock(seconds) {
-		var m = Math.floor(seconds / 60);
-		var s = Math.floor(seconds % 60);
+		var cs = Math.floor((seconds || 0) * 100);
+		var h = Math.floor(cs / 360000);
+		var m = Math.floor((cs % 360000) / 6000);
+		var s = Math.floor((cs % 6000) / 100);
 
-		return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+		return pad2(h) + ':' + pad2(m) + ':' + pad2(s) + ':' + pad2(cs % 100);
+	}
+
+	function pad2(n) {
+		return (n < 10 ? '0' : '') + n;
 	}
 
 	function bytes(n) {
@@ -364,9 +431,41 @@
 	/* Meter and scope                                                     */
 	/* ------------------------------------------------------------------ */
 
-	function draw() {
-		rafId = window.requestAnimationFrame(draw);
+	/** Size the canvas to its box and hand back a cleared 2d context. */
+	function scopeContext() {
+		var canvas = el.scope;
+		var width = canvas.clientWidth || 600;
 
+		if (canvas.width !== width) {
+			canvas.width = width;
+		}
+
+		var g = canvas.getContext('2d');
+
+		g.clearRect(0, 0, width, canvas.height);
+
+		return g;
+	}
+
+	/** Flat line plus a prompt, shown whenever the input is not live. */
+	function drawIdle() {
+		if (!el.scope) {
+			return;
+		}
+
+		var g = scopeContext();
+		var width = el.scope.width;
+		var mid = el.scope.height / 2;
+
+		g.lineWidth = 1.5;
+		g.strokeStyle = '#dce1e7';
+		g.beginPath();
+		g.moveTo(0, mid);
+		g.lineTo(width, mid);
+		g.stroke();
+	}
+
+	function drawFrame() {
 		if (!analyser || !el.scope) {
 			return;
 		}
@@ -391,17 +490,10 @@
 			el.meter.classList.toggle('is-hot', peak > 0.97);
 		}
 
-		var canvas = el.scope;
-		var width = canvas.clientWidth || 600;
+		var g = scopeContext();
+		var width = el.scope.width;
+		var height = el.scope.height;
 
-		if (canvas.width !== width) {
-			canvas.width = width;
-		}
-
-		var g = canvas.getContext('2d');
-		var height = canvas.height;
-
-		g.clearRect(0, 0, width, height);
 		g.lineWidth = 1.5;
 		g.strokeStyle = recording && !paused ? '#e81f64' : '#9aa4b1';
 		g.beginPath();
@@ -421,32 +513,114 @@
 		g.stroke();
 	}
 
-	function startDrawing() {
-		if (rafId === null) {
-			draw();
-		}
-	}
+	var scopeLoop = makeLoop(
+		function (fn) { return window.requestAnimationFrame(fn); },
+		function (id) { window.cancelAnimationFrame(id); },
+		drawFrame
+	);
 
 	function stopDrawing() {
-		if (rafId !== null) {
-			window.cancelAnimationFrame(rafId);
-			rafId = null;
-		}
+		scopeLoop.stop();
+
 		if (el.meter) {
 			el.meter.style.width = '0%';
 			el.meter.classList.remove('is-hot');
 		}
+
+		drawIdle();
 	}
 
-	function tick() {
-		if (!recording) {
+	function live() {
+		return !!(stream && stream.active);
+	}
+
+	/**
+	 * Run the scope on an open mic, without recording. Idempotent, so every
+	 * trigger can just call it. Record then reuses the mic — openMic()
+	 * short-circuits on an active stream.
+	 *
+	 * Failures stay quiet: this runs unprompted, and the only reason it fails
+	 * is a mic that is not available, which Record reports properly when the
+	 * user actually asks for one.
+	 */
+	function armScope() {
+		if (recording || opening || live()) {
 			return;
 		}
 
-		var seconds = elapsedBefore + (paused ? 0 : (Date.now() - startedAt) / 1000);
+		opening = true;
 
-		text(el.timer, clock(seconds));
-		window.setTimeout(tick, 200);
+		openMic().then(function () {
+			opening = false;
+
+			// Permission is not a gesture. Autoplay policy can leave the context
+			// suspended, which would draw a live-looking but silent flat line —
+			// back off and leave the prompt up, since a click resumes it.
+			if (!ctx || ctx.state !== 'running') {
+				closeMic();
+				drawIdle();
+				return;
+			}
+
+			scopeLoop.start();
+		}).catch(function () {
+			opening = false;
+			closeMic();
+			drawIdle();
+		});
+	}
+
+	/**
+	 * getUserMedia needs permission, not a gesture — so once the mic is granted
+	 * the scope can run on its own. Watch the grant and arm on it; browsers
+	 * without the permissions API fall back to the click.
+	 */
+	function armWhenPermitted() {
+		if (!navigator.permissions || !navigator.permissions.query) {
+			return;
+		}
+
+		navigator.permissions.query({ name: 'microphone' }).then(function (status) {
+			if (status.state === 'granted') {
+				armScope();
+			}
+
+			status.onchange = function () {
+				if (status.state === 'granted') {
+					armScope();
+				}
+			};
+		}).catch(function () {
+			/* 'microphone' is not queryable here; the click path still arms */
+		});
+	}
+
+	function paintTimer() {
+		var value = clock(elapsedBefore + (recording && !paused ? (Date.now() - startedAt) / 1000 : 0));
+
+		if (value !== lastClock) {
+			lastClock = value;
+			text(el.timer, value);
+		}
+	}
+
+	var timerLoop = makeLoop(
+		function (fn) { return window.setTimeout(fn, TICK_MS); },
+		function (id) { window.clearTimeout(id); },
+		function () {
+			if (!recording || paused) {
+				return false;
+			}
+
+			paintTimer();
+		}
+	);
+
+	function resetTimer() {
+		timerLoop.stop();
+		elapsedBefore = 0;
+		lastClock = ZERO;
+		text(el.timer, ZERO);
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -454,10 +628,16 @@
 	/* ------------------------------------------------------------------ */
 
 	function start() {
+		if (recording || opening) {
+			return;
+		}
+
+		opening = true;
 		clearError();
 		discardTake();
 
 		openMic().then(function () {
+			opening = false;
 			chunks = [];
 			frames = 0;
 			paused = false;
@@ -467,16 +647,18 @@
 
 			el.record.classList.remove('btn-danger');
 			el.record.classList.add('btn-default');
-			el.record.querySelector('span').textContent = 'Stop';
-			el.record.querySelector('i').className = 'fa fa-stop';
+			setButton(el.record, 'Stop', 'stop');
 			show(el.pause, true);
-			text(el.state, 'Recording');
-			el.state.className = 'oryk-state is-live';
 
-			startDrawing();
-			tick();
+			scopeLoop.start();
+			lastClock = '';
+			timerLoop.start();
 		}).catch(function (error) {
+			opening = false;
 			recording = false;
+			paused = false;
+			timerLoop.stop();
+			stopDrawing();
 			fail(micMessage(error));
 		});
 	}
@@ -497,6 +679,52 @@
 		return (error && error.message) || 'Could not open the microphone.';
 	}
 
+	/**
+	 * Encode whatever is in `chunks` at the selected rate. Non-destructive:
+	 * flatten() copies, so a paused take can be auditioned and then resumed.
+	 */
+	function buildWav() {
+		var rate = parseInt(el.rate.value, 10) || 8000;
+
+		return resample(flatten(chunks, frames), ctx.sampleRate, rate).then(function (samples) {
+			var blob = encodeWav(samples, rate);
+
+			return {
+				blob: blob,
+				url: URL.createObjectURL(blob),
+				seconds: samples.length / rate,
+				rate: rate
+			};
+		});
+	}
+
+	function showPreview(url, label, saveable) {
+		releasePreview();
+		previewUrl = url;
+
+		el.preview.src = url;
+		text(el.state, label);
+		show(el.saveForm, saveable);
+		show(el.review, true);
+	}
+
+	function releasePreview() {
+		if (previewUrl) {
+			URL.revokeObjectURL(previewUrl);
+			previewUrl = null;
+		}
+	}
+
+	function clearPreview() {
+		if (!el.preview.paused) {
+			el.preview.pause();
+		}
+
+		el.preview.removeAttribute('src');
+		releasePreview();
+		show(el.review, false);
+	}
+
 	function stop() {
 		if (!recording) {
 			return;
@@ -511,40 +739,65 @@
 
 		el.record.classList.add('btn-danger');
 		el.record.classList.remove('btn-default');
-		el.record.querySelector('span').textContent = 'Record';
-		el.record.querySelector('i').className = 'fa fa-circle';
+		setButton(el.record, 'Record', 'circle');
 		show(el.pause, false);
-		el.pause.querySelector('span').textContent = 'Pause';
-		el.pause.querySelector('i').className = 'fa fa-pause';
+		setButton(el.pause, 'Pause', 'pause');
 
 		stopDrawing();
 		closeMic();
+		clearPreview();
+		resetTimer();
 
-		text(el.state, 'Encoding');
 		el.state.className = 'oryk-state';
+		text(el.state, 'Encoding');
 
 		if (!frames) {
-			text(el.state, 'Nothing was captured');
+			fail('Nothing was captured.');
+			text(el.state, 'Ready');
 			return;
 		}
 
-		var rate = parseInt(el.rate.value, 10) || 8000;
-		var captured = flatten(chunks, frames);
-		var sourceRate = ctx.sampleRate;
+		buildWav().then(function (take) {
+			chunks = [];
+			takeBlob = take.blob;
 
-		chunks = [];
-
-		resample(captured, sourceRate, rate).then(function (samples) {
-			takeBlob = encodeWav(samples, rate);
-			takeUrl = URL.createObjectURL(takeBlob);
-
-			el.preview.src = takeUrl;
-			show(el.review, true);
-			text(el.state, clock(samples.length / rate) + ' · ' + bytes(takeBlob.size) + ' · ' + (rate / 1000) + ' kHz');
+			showPreview(take.url, clock(take.seconds) + ' · ' + bytes(take.blob.size) +
+				' · ' + (take.rate / 1000) + ' kHz', true);
 			el.name.focus();
 		}).catch(function (error) {
 			fail(error.message || 'Could not encode the recording.');
 			text(el.state, 'Ready');
+		});
+	}
+
+	/**
+	 * Paused playback: audition the take so far, then resume into the same one.
+	 * The encode is async, so Stop or Resume can land mid-flight — check we are
+	 * still paused before showing it, or it would overwrite the finished take.
+	 */
+	function monitor() {
+		if (monitoring || !frames) {
+			return;
+		}
+
+		monitoring = true;
+		text(el.state, 'Encoding');
+
+		buildWav().then(function (take) {
+			monitoring = false;
+
+			if (!recording || !paused) {
+				URL.revokeObjectURL(take.url);
+				return;
+			}
+
+			showPreview(take.url, clock(take.seconds) + ' so far · paused', false);
+		}).catch(function (error) {
+			monitoring = false;
+
+			if (recording && paused) {
+				fail(error.message || 'Could not build the preview.');
+			}
 		});
 	}
 
@@ -556,32 +809,65 @@
 		if (paused) {
 			paused = false;
 			startedAt = Date.now();
-			el.pause.querySelector('span').textContent = 'Pause';
-			el.pause.querySelector('i').className = 'fa fa-pause';
-			text(el.state, 'Recording');
-			el.state.className = 'oryk-state is-live';
-			tick();
+			setButton(el.pause, 'Pause', 'pause');
+			clearPreview();
+			timerLoop.start();
 		} else {
 			paused = true;
 			elapsedBefore += (Date.now() - startedAt) / 1000;
-			el.pause.querySelector('span').textContent = 'Resume';
-			el.pause.querySelector('i').className = 'fa fa-play';
-			text(el.state, 'Paused');
-			el.state.className = 'oryk-state';
+			setButton(el.pause, 'Resume', 'play');
+			timerLoop.stop();
+			paintTimer();
+			monitor();
+		}
+	}
+
+	/* ------------------------------------------------------------------ */
+	/* Re-recording an existing file                                       */
+	/* ------------------------------------------------------------------ */
+
+	function editUrl(name) {
+		// Strip any edit= already present, then normalise whatever separator the
+		// removal left behind — it is not always the leading '?'.
+		var query = window.location.search.replace(/[?&]edit=[^&]*/g, '').replace(/^[?&]+/, '');
+
+		return window.location.pathname + '?' + (query ? query + '&' : '') +
+			'edit=' + encodeURIComponent(name);
+	}
+
+	function readEditParam() {
+		var match = /[?&]edit=([^&]*)/.exec(window.location.search);
+
+		return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : '';
+	}
+
+	function setEditing(name) {
+		editing = name || '';
+
+		show(el.editing, !!editing);
+		text(el.editingName, editing ? 'custom/' + editing : '');
+
+		if (editing) {
+			el.name.value = editing;
+		}
+	}
+
+	/** Drop edit mode without a reload, and take ?edit= out of the URL. */
+	function clearEditing() {
+		setEditing('');
+
+		if (window.history && window.history.replaceState && readEditParam()) {
+			window.history.replaceState({}, '',
+				window.location.pathname + window.location.search.replace(/([?&])edit=[^&]*&?/, '$1').replace(/[?&]$/, ''));
 		}
 	}
 
 	function discardTake() {
-		if (takeUrl) {
-			URL.revokeObjectURL(takeUrl);
-		}
-
 		takeBlob = null;
-		takeUrl = null;
-		el.preview.removeAttribute('src');
-		show(el.review, false);
+		clearPreview();
+		show(el.saveForm, true);
 		text(el.saveState, '');
-		text(el.timer, '00:00');
+		resetTimer();
 		text(el.state, 'Ready');
 	}
 
@@ -657,7 +943,7 @@
 	function save(overwrite) {
 		var name = (el.name.value || '').trim();
 
-		if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+		if (!NAME_RE.test(name)) {
 			text(el.saveState, 'Name must be letters, numbers, dot, dash or underscore.');
 			el.saveState.className = 'oryk-save-state is-bad';
 			return;
@@ -678,7 +964,9 @@
 		form.append('module', MODULE);
 		form.append('command', 'save');
 		form.append('name', name);
-		form.append('overwrite', overwrite ? 'true' : 'false');
+		// Re-recording that same file is already a confirmed overwrite. Renaming
+		// while in edit mode is not — that would clobber a different recording.
+		form.append('overwrite', (overwrite || name === editing) ? 'true' : 'false');
 		form.append('audio', takeBlob, name + '.wav');
 
 		el.save.disabled = true;
@@ -693,6 +981,7 @@
 				el.saveState.className = 'oryk-save-state is-good';
 				render(res.recordings || []);
 				toast(res.message || 'Saved', 'success');
+				clearEditing();
 				discardTake();
 				return;
 			}
@@ -766,6 +1055,8 @@
 				'<td>' + escapeHtml(when(r.modified)) + '</td>' +
 				'<td class="text-right oryk-row-actions">' +
 				(r.playable ? '<audio controls preload="none" src="' + playUrl + '"></audio>' : '<span class="text-muted">not previewable</span>') +
+				' <a class="btn btn-xs btn-default" href="' + escapeHtml(editUrl(r.name)) + '">' +
+				'<i class="fa fa-microphone"></i> Edit</a>' +
 				' <button type="button" class="btn btn-xs btn-default" data-oryk-delete="' + escapeHtml(r.name) + '">' +
 				'<i class="fa fa-trash"></i></button>' +
 				'</td></tr>';
@@ -776,7 +1067,28 @@
 	/* Wiring                                                              */
 	/* ------------------------------------------------------------------ */
 
+	var booted = false;
+
 	function init() {
+		if (booted) {
+			return;
+		}
+
+		// FreePBX can swap a module page in without a full document load, which
+		// re-executes this file. That gives a second copy of the script its own
+		// closure — its own `recording`, `startedAt`, its own loops — bound to the
+		// same buttons, so one click drives two recorders writing different
+		// times into the same element. A closure-local flag cannot see the
+		// other copy, so the claim is staked on the node itself.
+		var anchor = $('orykMediaRecord');
+
+		if (!anchor || anchor.getAttribute('data-oryk-bound') === '1') {
+			return;
+		}
+
+		anchor.setAttribute('data-oryk-bound', '1');
+		booted = true;
+
 		el = {
 			insecure: $('orykMediaInsecure'),
 			error: $('orykMediaError'),
@@ -789,13 +1101,17 @@
 			meter: $('orykMediaMeterFill'),
 			scope: $('orykMediaScope'),
 			review: $('orykMediaReview'),
+			saveForm: $('orykMediaSaveForm'),
 			preview: $('orykMediaPreview'),
 			name: $('orykMediaName'),
 			save: $('orykMediaSave'),
 			download: $('orykMediaDownload'),
 			discard: $('orykMediaDiscard'),
 			saveState: $('orykMediaSaveState'),
-			list: $('orykMediaList')
+			list: $('orykMediaList'),
+			editing: $('orykMediaEditing'),
+			editingName: $('orykMediaEditingName'),
+			editCancel: $('orykMediaEditCancel')
 		};
 
 		if (!el.record) {
@@ -803,6 +1119,15 @@
 		}
 
 		render(CFG.recordings || []);
+
+		// Arrived from a row's Edit link: prefill the name and say so, so Save
+		// replaces that file instead of stopping on the "already exists" step.
+		var wanted = readEditParam();
+
+		if (wanted && NAME_RE.test(wanted)) {
+			setEditing(wanted);
+			el.editing.scrollIntoView({ block: 'center' });
+		}
 
 		var supported = window.isSecureContext !== false &&
 			navigator.mediaDevices &&
@@ -819,6 +1144,11 @@
 		}
 
 		listDevices();
+		drawIdle();
+
+		el.scope.addEventListener('click', armScope);
+
+		armWhenPermitted();
 
 		el.record.addEventListener('click', function () {
 			if (recording) {
@@ -829,20 +1159,24 @@
 		});
 
 		el.pause.addEventListener('click', togglePause);
+		el.editCancel.addEventListener('click', function () {
+			clearEditing();
+			el.name.value = '';
+		});
 		el.discard.addEventListener('click', discardTake);
 		el.save.addEventListener('click', function () {
 			save(false);
 		});
 
 		el.download.addEventListener('click', function () {
-			if (!takeUrl) {
+			if (!takeBlob || !previewUrl) {
 				return;
 			}
 
 			var name = (el.name.value || 'recording').trim() || 'recording';
 			var a = document.createElement('a');
 
-			a.href = takeUrl;
+			a.href = previewUrl;
 			a.download = name + '.wav';
 			document.body.appendChild(a);
 			a.click();
@@ -851,9 +1185,13 @@
 
 		// Switching input device mid-session means reopening the mic.
 		el.device.addEventListener('change', function () {
-			if (!recording) {
-				closeMic();
+			if (recording) {
+				return;
 			}
+
+			stopDrawing();
+			closeMic();
+			armScope();       // follow the selection instead of holding the old mic
 		});
 
 		el.saveState.addEventListener('click', function (event) {
