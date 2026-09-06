@@ -23,6 +23,9 @@ use FreePBX_Helpers;
  *
  * Both paths end in the same place, as the same kind of file, listed and
  * deleted by the same code.
+ *
+ * The module is two pages, in the shape the rest of FreePBX uses: a list of
+ * what exists, and an editor for one recording. See showPage().
  */
 class Oryk_media extends FreePBX_Helpers implements \BMO
 {
@@ -64,24 +67,105 @@ class Oryk_media extends FreePBX_Helpers implements \BMO
 		$this->astman = $freepbx->astman;
 	}
 
+	/**
+	 * Two pages, told apart by ?edit=.
+	 *
+	 *   ?display=oryk_media              the list: what exists
+	 *   ?display=oryk_media&edit=<name>  the editor, bound to that recording
+	 *   ?display=oryk_media&edit=        the editor, writing a new one
+	 *
+	 * `edit` present but empty is deliberate rather than a degenerate case: it
+	 * is the same page doing the same thing, minus a file to replace. The
+	 * parameter is the name itself, not an id, because that name *is* the
+	 * identity here -- there is no row anywhere, only a file in a directory.
+	 */
 	public function showPage()
 	{
-		$page = isset($_REQUEST['display']) ? $_REQUEST['display'] : 'default';
-
-		switch ($page) {
-			case 'oryk_media':
-				return load_view(__DIR__ . '/views/media.php', [
-					'user' => $this->getUser(),
-					'customDir' => $this->getCustomDir(),
-					'writable' => $this->isCustomDirWritable(),
-					'maxBytes' => self::MAX_UPLOAD_BYTES,
-					'recordings' => $this->listRecordings(),
-					'tts' => $this->ttsStatus(),
-					'assetUrl' => [$this, 'assetUrl'],
-				]);
-			default:
-				break;
+		if (!isset($_REQUEST['edit'])) {
+			return load_view(__DIR__ . '/views/list.php', [
+				'customDir' => $this->getCustomDir(),
+				'writable' => $this->isCustomDirWritable(),
+				'recordings' => $this->listRecordings(),
+				'saved' => $this->savedName(),
+				'assetUrl' => [$this, 'assetUrl'],
+			]);
 		}
+
+		$wanted = trim((string) $_REQUEST['edit']);
+
+		// A name that could never exist on disk is a typo or a hand-edited URL,
+		// not a recording. Sending it to the editor would open a form bound to
+		// something unreachable, so it goes back to the list instead.
+		if ($wanted !== '' && !$this->isValidName($wanted)) {
+			header('Location: ?display=oryk_media');
+
+			return;
+		}
+
+		// A name that is merely not taken yet is a prefill, not a target: Save
+		// is then a first write and still has to confirm before replacing
+		// anything, exactly as it would from a blank editor.
+		$editing = $this->recordingExists($wanted) ? $wanted : '';
+
+		return load_view(__DIR__ . '/views/edit.php', [
+			'customDir' => $this->getCustomDir(),
+			'writable' => $this->isCustomDirWritable(),
+			'maxBytes' => self::MAX_UPLOAD_BYTES,
+			'editing' => $editing,
+			'prefill' => $wanted,
+			'playable' => $editing !== '' && $this->playableExtension($editing) !== null,
+			'usage' => $editing !== '' ? $this->getUsage($editing) : [],
+			'tts' => $this->ttsStatus(),
+			'assetUrl' => [$this, 'assetUrl'],
+		]);
+	}
+
+	/**
+	 * Buttons FreePBX draws in the page header.
+	 *
+	 * Deliberately not the usual submit/delete names: those are wired by core
+	 * to a `form.fpbx-submit`, and neither page has one -- a recording is not a
+	 * form post, it is an encoded blob going up over ajax. These are ours, and
+	 * shared.js's onAction() binds them.
+	 */
+	public function getActionBar($request)
+	{
+		if (!isset($_REQUEST['edit'])) {
+			return [
+				'orykadd' => [
+					'name' => 'orykadd',
+					'id' => 'orykadd',
+					'value' => _('Add'),
+				],
+			];
+		}
+
+		return [
+			'oryksave' => [
+				'name' => 'oryksave',
+				'id' => 'oryksave',
+				'value' => _('Save'),
+			],
+			'orykclose' => [
+				'name' => 'orykclose',
+				'id' => 'orykclose',
+				'value' => _('Close'),
+			],
+		];
+	}
+
+	/**
+	 * Name the editor says it just wrote, for the list to point at.
+	 *
+	 * It arrives in the URL, so it is checked like any other input before it
+	 * reaches a template -- it only ever ends up compared against names the
+	 * server itself produced, but that is a property of today's callers.
+	 */
+	private function savedName()
+	{
+		$saved = isset($_REQUEST['saved']) ? trim((string) $_REQUEST['saved']) : '';
+
+		return $this->isValidName($saved) ? $saved : '';
 	}
 
 	/**

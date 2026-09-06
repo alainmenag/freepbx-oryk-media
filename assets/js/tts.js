@@ -6,9 +6,9 @@
  * It never sees a model path, a binary path or a command line, and there is
  * nothing here that could supply one.
  *
- * Everything after the file exists -- the saved list, the play endpoint, the
- * delete button, the name rule -- is recorder.js's, reached through
- * OrykMedia.shared rather than reimplemented.
+ * Everything that is not synthesis -- the transport, the name rule, the play
+ * endpoint, where the two pages are -- comes from shared.js rather than being
+ * reimplemented here.
  */
 (function (window, document) {
 	'use strict';
@@ -19,6 +19,7 @@
 	var el = {};
 	var shared = null;
 	var generating = false;
+	var saved = '';    // name of the last file written, for the Done button
 
 	function $(id) {
 		return document.getElementById(id);
@@ -110,11 +111,7 @@
 	 * when the same name is regenerated.
 	 */
 	function preview(name, meta) {
-		var url = shared.ajaxUrl + '?module=' + shared.module +
-			'&command=play&name=' + encodeURIComponent(name) +
-			'&t=' + Date.now();
-
-		el.preview.src = url;
+		el.preview.src = shared.playUrl(name, true);
 		text(el.meta, meta);
 		show(el.review, true);
 	}
@@ -139,15 +136,15 @@
 			return;
 		}
 
-		var form = new FormData();
-
-		form.append('module', shared.module);
-		form.append('command', 'generateTts');
-		form.append('name', name);
-		form.append('text', body);
-		form.append('voice', el.voice.value);
-		form.append('rate', el.rate.value);
-		form.append('overwrite', overwrite ? 'true' : 'false');
+		var form = shared.command('generateTts', {
+			name: name,
+			text: body,
+			voice: el.voice.value,
+			rate: el.rate.value,
+			// Regenerating the file this page was opened on is already a
+			// confirmed replacement; any other name still has to be confirmed.
+			overwrite: (overwrite || name === (CFG.editing || '')) ? 'true' : 'false'
+		});
 
 		generating = true;
 		el.generate.disabled = true;
@@ -159,15 +156,19 @@
 			el.generate.disabled = false;
 
 			if (res.status) {
+				// Unlike a take from the microphone, this was never auditioned
+				// before it was written -- so play it here rather than
+				// bouncing straight back to the list. Done is a click away.
 				state(res.message || 'Saved', 'good');
-				shared.render(res.recordings || []);
 				shared.toast(res.message || 'Saved', 'success');
-				preview(res.name, [
-					'custom/' + res.name,
+				saved = res.name || name;
+				preview(saved, [
+					'custom/' + saved,
 					(res.seconds || 0) + ' s',
 					shared.bytes(res.bytes || 0),
 					((res.rate || 8000) / 1000) + ' kHz'
 				].join(' · '));
+				show(el.done, true);
 				return;
 			}
 
@@ -215,7 +216,8 @@
 			review: $('orykTtsReview'),
 			preview: $('orykTtsPreview'),
 			meta: $('orykTtsMeta'),
-			error: $('orykTtsError')
+			error: $('orykTtsError'),
+			done: $('orykTtsDone')
 		};
 
 		// Same guard as recorder.js: FreePBX can swap a module page in without
@@ -248,7 +250,27 @@
 				el.preview.pause();
 			}
 		});
+
+		el.done.addEventListener('click', function () {
+			shared.go(shared.listUrl(saved));
+		});
 	}
+
+	/*
+	 * What Save means while this tab is open. The action bar asks whichever
+	 * panel is showing; see recorder.js.
+	 */
+	window.OrykMedia = window.OrykMedia || {};
+	window.OrykMedia.panels = window.OrykMedia.panels || {};
+	window.OrykMedia.panels.orykMediaTts = {
+		submit: function () {
+			// Unavailable Piper means init() bailed and there is nothing to
+			// drive; the panel already says why.
+			if (el.generate) {
+				generate(false);
+			}
+		}
+	};
 
 	if (document.readyState === 'loading') {
 		document.addEventListener('DOMContentLoaded', init);

@@ -1,5 +1,5 @@
 /*
- * recorder.js -- browser microphone capture for the Oryk Media module.
+ * recorder.js -- browser microphone capture, the first half of views/edit.php.
  *
  * All encoding happens here. The mic is captured as Float32 at whatever rate
  * the audio hardware runs at, resampled by an OfflineAudioContext to a
@@ -9,16 +9,19 @@
  * getUserMedia only exists on a secure origin. On a plain http:// admin page
  * there is no microphone to be had and no flag we can set from here; the page
  * says so rather than failing quietly.
+ *
+ * This page makes one recording and then leaves. Listing, playing back and
+ * deleting what already exists belong to list.js, on the other page.
  */
 (function (window, document) {
 	'use strict';
 
 	var CFG = (window.OrykMedia && window.OrykMedia.config) || {};
+	var S = window.OrykMedia && window.OrykMedia.shared;
+
 	var MAX_SECONDS = 20 * 60;
 	var TICK_MS = 50;        // timer repaint interval; the clock shows hundredths
 	var ZERO = '00:00:00:00';
-	var AJAX = 'ajax.php';
-	var MODULE = 'oryk_media';
 
 	var el = {};
 	var ctx = null;          // AudioContext, kept alive between takes
@@ -40,9 +43,13 @@
 	var takeBlob = null;     // encoded WAV of the finished take, null until stop
 	var previewUrl = null;   // object URL behind the player: take or paused monitor
 	var monitoring = false;
-	var editing = '';        // name this take is re-recording, from ?edit=
+	var leaving = false;     // a save is navigating away; do not warn about it
 
-	var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+	// The recording this page is replacing, from ?edit=<name>. Empty on a new
+	// one, and empty too when ?edit= names something that is not there yet --
+	// then the name is only a prefill, and Save is a first write, not a
+	// replacement.
+	var editing = CFG.editing || '';
 
 	/* ------------------------------------------------------------------ */
 	/* Small helpers                                                       */
@@ -125,53 +132,6 @@
 
 	function clearError() {
 		show(el.error, false);
-	}
-
-	function clock(seconds) {
-		var cs = Math.floor((seconds || 0) * 100);
-		var h = Math.floor(cs / 360000);
-		var m = Math.floor((cs % 360000) / 6000);
-		var s = Math.floor((cs % 6000) / 100);
-
-		return pad2(h) + ':' + pad2(m) + ':' + pad2(s) + ':' + pad2(cs % 100);
-	}
-
-	function pad2(n) {
-		return (n < 10 ? '0' : '') + n;
-	}
-
-	function bytes(n) {
-		if (!n) {
-			return '0 B';
-		}
-		if (n < 1024) {
-			return n + ' B';
-		}
-		if (n < 1048576) {
-			return (n / 1024).toFixed(1) + ' KB';
-		}
-
-		return (n / 1048576).toFixed(1) + ' MB';
-	}
-
-	function when(unixSeconds) {
-		if (!unixSeconds) {
-			return '';
-		}
-
-		return new Date(unixSeconds * 1000).toLocaleString();
-	}
-
-	function escapeHtml(value) {
-		return String(value).replace(/[&<>"']/g, function (c) {
-			return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-		});
-	}
-
-	function toast(message, kind) {
-		if (typeof window.fpbxToast === 'function') {
-			window.fpbxToast(message, kind === 'error' ? 'Error' : '', kind || 'success');
-		}
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -596,7 +556,7 @@
 	}
 
 	function paintTimer() {
-		var value = clock(elapsedBefore + (recording && !paused ? (Date.now() - startedAt) / 1000 : 0));
+		var value = S.clock(elapsedBefore + (recording && !paused ? (Date.now() - startedAt) / 1000 : 0));
 
 		if (value !== lastClock) {
 			lastClock = value;
@@ -761,7 +721,7 @@
 			chunks = [];
 			takeBlob = take.blob;
 
-			showPreview(take.url, clock(take.seconds) + ' · ' + bytes(take.blob.size) +
+			showPreview(take.url, S.clock(take.seconds) + ' · ' + S.bytes(take.blob.size) +
 				' · ' + (take.rate / 1000) + ' kHz', true);
 			el.name.focus();
 		}).catch(function (error) {
@@ -791,7 +751,7 @@
 				return;
 			}
 
-			showPreview(take.url, clock(take.seconds) + ' so far · paused', false);
+			showPreview(take.url, S.clock(take.seconds) + ' so far · paused', false);
 		}).catch(function (error) {
 			monitoring = false;
 
@@ -819,46 +779,6 @@
 			timerLoop.stop();
 			paintTimer();
 			monitor();
-		}
-	}
-
-	/* ------------------------------------------------------------------ */
-	/* Re-recording an existing file                                       */
-	/* ------------------------------------------------------------------ */
-
-	function editUrl(name) {
-		// Strip any edit= already present, then normalise whatever separator the
-		// removal left behind — it is not always the leading '?'.
-		var query = window.location.search.replace(/[?&]edit=[^&]*/g, '').replace(/^[?&]+/, '');
-
-		return window.location.pathname + '?' + (query ? query + '&' : '') +
-			'edit=' + encodeURIComponent(name);
-	}
-
-	function readEditParam() {
-		var match = /[?&]edit=([^&]*)/.exec(window.location.search);
-
-		return match ? decodeURIComponent(match[1].replace(/\+/g, ' ')) : '';
-	}
-
-	function setEditing(name) {
-		editing = name || '';
-
-		show(el.editing, !!editing);
-		text(el.editingName, editing ? 'custom/' + editing : '');
-
-		if (editing) {
-			el.name.value = editing;
-		}
-	}
-
-	/** Drop edit mode without a reload, and take ?edit= out of the URL. */
-	function clearEditing() {
-		setEditing('');
-
-		if (window.history && window.history.replaceState && readEditParam()) {
-			window.history.replaceState({}, '',
-				window.location.pathname + window.location.search.replace(/([?&])edit=[^&]*&?/, '$1').replace(/[?&]$/, ''));
 		}
 	}
 
@@ -903,164 +823,71 @@
 	}
 
 	/* ------------------------------------------------------------------ */
-	/* Server                                                              */
+	/* Saving                                                              */
 	/* ------------------------------------------------------------------ */
 
-	function post(data) {
-		return new Promise(function (resolve, reject) {
-			var xhr = new XMLHttpRequest();
-
-			xhr.open('POST', AJAX, true);
-			xhr.responseType = 'json';
-
-			xhr.onload = function () {
-				var body = xhr.response;
-
-				if (typeof body === 'string') {
-					try {
-						body = JSON.parse(body);
-					} catch (e) {
-						body = null;
-					}
-				}
-
-				if (!body) {
-					reject(new Error('The server sent back something unreadable.'));
-					return;
-				}
-
-				resolve(body);
-			};
-
-			xhr.onerror = function () {
-				reject(new Error('Could not reach the server.'));
-			};
-
-			xhr.send(data);
-		});
+	function saveState(message, kind) {
+		text(el.saveState, message);
+		el.saveState.className = 'oryk-save-state' + (kind ? ' is-' + kind : '');
 	}
 
 	function save(overwrite) {
 		var name = (el.name.value || '').trim();
 
-		if (!NAME_RE.test(name)) {
-			text(el.saveState, 'Name must be letters, numbers, dot, dash or underscore.');
-			el.saveState.className = 'oryk-save-state is-bad';
+		if (!takeBlob) {
+			saveState('Record something first.', 'bad');
 			return;
 		}
 
-		if (!takeBlob) {
+		if (!S.namePattern.test(name)) {
+			saveState('Name must be letters, numbers, dot, dash or underscore.', 'bad');
+			el.name.focus();
 			return;
 		}
 
 		if (takeBlob.size > CFG.maxBytes) {
-			text(el.saveState, 'Recording is too large to upload.');
-			el.saveState.className = 'oryk-save-state is-bad';
+			saveState('Recording is too large to upload.', 'bad');
 			return;
 		}
 
-		var form = new FormData();
+		// Re-recording that same file is already a confirmed overwrite: it is
+		// what the page was opened to do. Renaming while in edit mode is not —
+		// that would clobber a different recording.
+		var form = S.command('save', {
+			name: name,
+			overwrite: (overwrite || name === editing) ? 'true' : 'false'
+		});
 
-		form.append('module', MODULE);
-		form.append('command', 'save');
-		form.append('name', name);
-		// Re-recording that same file is already a confirmed overwrite. Renaming
-		// while in edit mode is not — that would clobber a different recording.
-		form.append('overwrite', (overwrite || name === editing) ? 'true' : 'false');
 		form.append('audio', takeBlob, name + '.wav');
 
 		el.save.disabled = true;
-		text(el.saveState, 'Saving…');
-		el.saveState.className = 'oryk-save-state';
+		saveState('Saving…');
 
-		post(form).then(function (res) {
-			el.save.disabled = false;
-
+		S.post(form).then(function (res) {
 			if (res.status) {
-				text(el.saveState, res.message || 'Saved');
-				el.saveState.className = 'oryk-save-state is-good';
-				render(res.recordings || []);
-				toast(res.message || 'Saved', 'success');
-				clearEditing();
-				discardTake();
+				// Saved: this page is done. The list is where a recording is
+				// played, renamed by re-recording, or deleted.
+				leaving = true;
+				takeBlob = null;
+				saveState(res.message || 'Saved', 'good');
+				S.go(S.listUrl(res.name || name));
 				return;
 			}
 
+			el.save.disabled = false;
+
 			if (res.exists) {
 				el.saveState.className = 'oryk-save-state is-bad';
-				el.saveState.innerHTML = escapeHtml(res.message) +
+				el.saveState.innerHTML = S.escapeHtml(res.message || 'That name is taken.') +
 					' <button type="button" class="btn btn-xs btn-warning" data-oryk-overwrite="1">Overwrite</button>';
 				return;
 			}
 
-			text(el.saveState, res.message || 'Could not save.');
-			el.saveState.className = 'oryk-save-state is-bad';
+			saveState(res.message || 'Could not save.', 'bad');
 		}).catch(function (error) {
 			el.save.disabled = false;
-			text(el.saveState, error.message);
-			el.saveState.className = 'oryk-save-state is-bad';
+			saveState(error.message, 'bad');
 		});
-	}
-
-	function remove(name, force) {
-		var form = new FormData();
-
-		form.append('module', MODULE);
-		form.append('command', 'delete');
-		form.append('name', name);
-		form.append('force', force ? 'true' : 'false');
-
-		post(form).then(function (res) {
-			if (res.status) {
-				render(res.recordings || []);
-				toast(res.message || 'Deleted', 'success');
-				return;
-			}
-
-			var row = el.list.querySelector('[data-oryk-row="' + name + '"] .oryk-row-note');
-
-			if (row) {
-				row.innerHTML = escapeHtml(res.message || 'Could not delete.') +
-					(res.inUse ? ' <button type="button" class="btn btn-xs btn-danger" data-oryk-force="' + escapeHtml(name) + '">Delete anyway</button>' : '');
-			}
-
-			toast(res.message || 'Could not delete', 'error');
-		}).catch(function (error) {
-			toast(error.message, 'error');
-		});
-	}
-
-	/* ------------------------------------------------------------------ */
-	/* Saved list                                                          */
-	/* ------------------------------------------------------------------ */
-
-	function render(recordings) {
-		if (!el.list) {
-			return;
-		}
-
-		if (!recordings.length) {
-			el.list.innerHTML = '<tr><td colspan="5" class="text-muted">No recordings yet.</td></tr>';
-			return;
-		}
-
-		el.list.innerHTML = recordings.map(function (r) {
-			var playUrl = AJAX + '?module=' + MODULE + '&command=play&name=' + encodeURIComponent(r.name);
-
-			return '<tr data-oryk-row="' + escapeHtml(r.name) + '">' +
-				'<td><code>custom/' + escapeHtml(r.name) + '</code>' +
-				'<div class="oryk-row-note"></div></td>' +
-				'<td>' + escapeHtml(r.formats.join(', ')) + '</td>' +
-				'<td>' + bytes(r.bytes) + '</td>' +
-				'<td>' + escapeHtml(when(r.modified)) + '</td>' +
-				'<td class="text-right oryk-row-actions">' +
-				(r.playable ? '<audio controls preload="none" src="' + playUrl + '"></audio>' : '<span class="text-muted">not previewable</span>') +
-				' <a class="btn btn-xs btn-default" href="' + escapeHtml(editUrl(r.name)) + '">' +
-				'<i class="fa fa-microphone"></i> Edit</a>' +
-				' <button type="button" class="btn btn-xs btn-default" data-oryk-delete="' + escapeHtml(r.name) + '">' +
-				'<i class="fa fa-trash"></i></button>' +
-				'</td></tr>';
-		}).join('');
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -1070,7 +897,7 @@
 	var booted = false;
 
 	function init() {
-		if (booted) {
+		if (booted || !S) {
 			return;
 		}
 
@@ -1107,27 +934,24 @@
 			save: $('orykMediaSave'),
 			download: $('orykMediaDownload'),
 			discard: $('orykMediaDiscard'),
-			saveState: $('orykMediaSaveState'),
-			list: $('orykMediaList'),
-			editing: $('orykMediaEditing'),
-			editingName: $('orykMediaEditingName'),
-			editCancel: $('orykMediaEditCancel')
+			saveState: $('orykMediaSaveState')
 		};
 
-		if (!el.record) {
-			return;
-		}
+		// The action bar is drawn by FreePBX, outside this module's markup, so
+		// Save has to be told what it means here. Close is the only way back
+		// that does not go through a save.
+		S.onAction('oryksave', function () {
+			var active = document.querySelector('.oryk-method-panels > .tab-pane.active');
+			var panel = active && window.OrykMedia.panels[active.id];
 
-		render(CFG.recordings || []);
+			if (panel && panel.submit) {
+				panel.submit();
+			}
+		});
 
-		// Arrived from a row's Edit link: prefill the name and say so, so Save
-		// replaces that file instead of stopping on the "already exists" step.
-		var wanted = readEditParam();
-
-		if (wanted && NAME_RE.test(wanted)) {
-			setEditing(wanted);
-			el.editing.scrollIntoView({ block: 'center' });
-		}
+		S.onAction('orykclose', function () {
+			S.go(S.listUrl());
+		});
 
 		var supported = window.isSecureContext !== false &&
 			navigator.mediaDevices &&
@@ -1159,10 +983,6 @@
 		});
 
 		el.pause.addEventListener('click', togglePause);
-		el.editCancel.addEventListener('click', function () {
-			clearEditing();
-			el.name.value = '';
-		});
 		el.discard.addEventListener('click', discardTake);
 		el.save.addEventListener('click', function () {
 			save(false);
@@ -1200,46 +1020,13 @@
 			}
 		});
 
-		el.list.addEventListener('click', function (event) {
-			var button = event.target.closest('[data-oryk-delete], [data-oryk-force]');
-
-			if (!button) {
-				return;
-			}
-
-			var force = button.getAttribute('data-oryk-force');
-
-			if (force) {
-				remove(force, true);
-				return;
-			}
-
-			var name = button.getAttribute('data-oryk-delete');
-
-			// Two-step confirm in place of a modal: the second click commits.
-			if (button.getAttribute('data-oryk-armed')) {
-				remove(name, false);
-				return;
-			}
-
-			button.setAttribute('data-oryk-armed', '1');
-			button.className = 'btn btn-xs btn-danger';
-			button.innerHTML = 'Really delete?';
-
-			window.setTimeout(function () {
-				if (button.parentNode) {
-					button.removeAttribute('data-oryk-armed');
-					button.className = 'btn btn-xs btn-default';
-					button.innerHTML = '<i class="fa fa-trash"></i>';
-				}
-			}, 4000);
-		});
-
 		window.addEventListener('beforeunload', function (event) {
-			if (recording || takeBlob) {
-				event.preventDefault();
-				event.returnValue = '';
+			if (leaving || !(recording || takeBlob)) {
+				return;
 			}
+
+			event.preventDefault();
+			event.returnValue = '';
 		});
 	}
 
@@ -1248,31 +1035,28 @@
 	/* ------------------------------------------------------------------ */
 
 	/*
-	 * Text to Speech is a different way of making a file, not a different kind
-	 * of file: once saved it lands in the same list, plays through the same
-	 * endpoint and is deleted by the same button. So it borrows the transport,
-	 * the renderer and the name rule from here rather than growing its own
-	 * copies of each, which would then drift.
+	 * Text to Speech is a different way of making the same file, so the two
+	 * panels are interchangeable to the action bar: each registers what its
+	 * Save means, and the toolbar asks whichever tab is open.
 	 *
 	 * redraw() is for the tab switch: the scope canvas sizes itself from its
 	 * box, and a box inside a hidden panel has no width.
 	 */
 	window.OrykMedia = window.OrykMedia || {};
-	window.OrykMedia.shared = {
-		ajaxUrl: AJAX,
-		module: MODULE,
-		namePattern: NAME_RE,
-		post: post,
-		render: render,
-		toast: toast,
-		bytes: bytes,
-		escapeHtml: escapeHtml,
-		redraw: function () {
+	window.OrykMedia.panels = window.OrykMedia.panels || {};
+	window.OrykMedia.panels.orykMediaMic = {
+		submit: function () {
+			save(false);
+		}
+	};
+
+	if (S) {
+		S.redraw = function () {
 			if (el.scope) {
 				drawIdle();
 			}
-		}
-	};
+		};
+	}
 
 	if (document.readyState === 'loading') {
 		document.addEventListener('DOMContentLoaded', init);

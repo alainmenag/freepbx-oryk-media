@@ -1,20 +1,31 @@
 <?php
 /**
- * views/media.php
+ * views/edit.php -- make one recording.
  *
- * @var array|null $user
- * @var string     $customDir
- * @var bool       $writable
- * @var int        $maxBytes
- * @var array      $recordings
- * @var array      $tts        Oryk_media::ttsStatus() -- `checks` only for admins
- * @var callable   $assetUrl
+ * Reached at ?display=oryk_media&edit=<name> to replace an existing recording,
+ * or ?display=oryk_media&edit= (present, empty) to write a new one. Two ways
+ * in, on tabs: the browser microphone, and local Piper text to speech. Both
+ * end in the same file, in the same place, under the name in the box.
+ *
+ * Nothing here lists, plays back or deletes what already exists -- that is
+ * views/list.php, which Close and a finished Save both return to.
+ *
+ * @var string      $customDir
+ * @var bool        $writable
+ * @var int         $maxBytes
+ * @var string      $editing   Existing recording being replaced, '' for a new one
+ * @var string      $prefill   Name to start the box with (may be a name not yet used)
+ * @var bool        $playable  Whether $editing can be auditioned in a browser
+ * @var array       $usage     System Recordings entries pointing at $editing
+ * @var array       $tts       Oryk_media::ttsStatus() -- `checks` only for admins
+ * @var callable    $assetUrl
  */
 $h = function ($v) {
 	return htmlspecialchars((string) $v, ENT_QUOTES, 'UTF-8');
 };
 
 $ttsReady = !empty($tts['available']);
+$playUrl = 'ajax.php?module=oryk_media&command=play&name=' . rawurlencode($editing);
 ?>
 <link rel="stylesheet" href="<?php echo $h($assetUrl('css/media.css')); ?>">
 
@@ -33,10 +44,42 @@ $ttsReady = !empty($tts['available']);
 		<div class="display full-border">
 
 			<div class="section-title">
-				<h2><span class="title">Create media</span></h2>
+				<h2>
+					<span class="title">
+						<?php if ($editing !== ''): ?>
+							Edit <code><?php echo $h('custom/' . $editing); ?></code>
+						<?php else: ?>
+							New recording
+						<?php endif; ?>
+					</span>
+				</h2>
 			</div>
 
 			<div class="section">
+
+				<?php if ($editing !== ''): ?>
+					<div class="oryk-editing">
+						<div class="oryk-editing-head">
+							<strong>Replacing <code><?php echo $h('custom/' . $editing); ?></code>.</strong>
+							Record or generate below, then Save &mdash; it is written over the
+							existing file, under the same name.
+							<a href="?display=oryk_media&amp;edit=">Make a new one instead</a>.
+						</div>
+
+						<?php if ($playable): ?>
+							<audio controls preload="none" class="oryk-preview oryk-editing-audio"
+								src="<?php echo $h($playUrl); ?>"></audio>
+						<?php endif; ?>
+
+						<?php if (!empty($usage)): ?>
+							<div class="oryk-editing-usage">
+								In use by System Recordings:
+								<?php echo $h(implode(', ', $usage)); ?>.
+								Whatever you save here is what those play.
+							</div>
+						<?php endif; ?>
+					</div>
+				<?php endif; ?>
 
 				<ul class="nav nav-tabs oryk-methods" role="tablist">
 					<li role="presentation" class="active">
@@ -106,11 +149,6 @@ $ttsReady = !empty($tts['available']);
 							</div>
 						</div>
 
-						<div id="orykMediaEditing" class="oryk-editing hidden">
-							Re-recording <code id="orykMediaEditingName"></code> &mdash; Save replaces it.
-							<button type="button" id="orykMediaEditCancel" class="btn btn-xs btn-default">Cancel</button>
-						</div>
-
 						<div class="oryk-recorder">
 							<div class="oryk-recorder-controls">
 								<button type="button" id="orykMediaRecord" class="btn btn-danger btn-lg">
@@ -145,7 +183,8 @@ $ttsReady = !empty($tts['available']);
 										<div class="col-md-8">
 											<div class="input-group">
 												<input type="text" id="orykMediaName" class="form-control"
-													placeholder="main-greeting" autocomplete="off">
+													placeholder="main-greeting" autocomplete="off"
+													value="<?php echo $h($prefill); ?>">
 												<span class="input-group-addon">.wav</span>
 											</div>
 										</div>
@@ -289,7 +328,8 @@ $ttsReady = !empty($tts['available']);
 										<div class="col-md-8">
 											<div class="input-group">
 												<input type="text" id="orykTtsName" class="form-control"
-													placeholder="main-greeting" autocomplete="off">
+													placeholder="main-greeting" autocomplete="off"
+													value="<?php echo $h($prefill); ?>">
 												<span class="input-group-addon">.wav</span>
 											</div>
 										</div>
@@ -316,6 +356,15 @@ $ttsReady = !empty($tts['available']);
 							<div id="orykTtsReview" class="oryk-review hidden">
 								<audio id="orykTtsPreview" controls class="oryk-preview"></audio>
 								<div id="orykTtsMeta" class="oryk-state"></div>
+								<div class="oryk-review-actions">
+									<button type="button" id="orykTtsDone" class="btn btn-default">
+										<i class="fa fa-check"></i> Done
+									</button>
+									<span class="help-block fpbx-help-block oryk-inline-help">
+										Written already. Generate again to replace it, or Done to
+										go back to the list.
+									</span>
+								</div>
 							</div>
 
 						<?php endif; ?>
@@ -323,25 +372,6 @@ $ttsReady = !empty($tts['available']);
 					</div>
 
 				</div>
-			</div>
-
-			<div class="section-title">
-				<h2><span class="title">Saved recordings</span></h2>
-			</div>
-
-			<div class="section">
-				<table class="table table-striped oryk-list">
-					<thead>
-						<tr>
-							<th>Name</th>
-							<th>Formats</th>
-							<th>Size</th>
-							<th>Modified</th>
-							<th class="text-right">&nbsp;</th>
-						</tr>
-					</thead>
-					<tbody id="orykMediaList"></tbody>
-				</table>
 			</div>
 
 		</div>
@@ -354,7 +384,7 @@ $ttsReady = !empty($tts['available']);
 		maxBytes: <?php echo (int) $maxBytes; ?>,
 		customDir: <?php echo json_encode($customDir); ?>,
 		writable: <?php echo $writable ? 'true' : 'false'; ?>,
-		recordings: <?php echo json_encode($recordings); ?>,
+		editing: <?php echo json_encode($editing); ?>,
 		tts: {
 			available: <?php echo $ttsReady ? 'true' : 'false'; ?>,
 			maxChars: <?php echo (int) $tts['maxChars']; ?>,
@@ -362,5 +392,6 @@ $ttsReady = !empty($tts['available']);
 		}
 	};
 </script>
+<script type="text/javascript" src="<?php echo $h($assetUrl('js/shared.js')); ?>"></script>
 <script type="text/javascript" src="<?php echo $h($assetUrl('js/recorder.js')); ?>"></script>
 <script type="text/javascript" src="<?php echo $h($assetUrl('js/tts.js')); ?>"></script>
